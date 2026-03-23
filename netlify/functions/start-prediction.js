@@ -22,13 +22,28 @@ exports.handler = async (event) => {
     return { statusCode: 400, body: JSON.stringify({ error: 'imageBase64 e mimeType são obrigatórios.' }) };
   }
 
-  const response = await fetch('https://api.replicate.com/v1/models/cjwbw/rembg/predictions', {
+  // Busca o ID da versão mais recente do modelo rembg
+  const modelRes = await fetch('https://api.replicate.com/v1/models/cjwbw/rembg/versions', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!modelRes.ok) {
+    const text = await modelRes.text();
+    return { statusCode: modelRes.status, body: JSON.stringify({ error: `Erro ao buscar versão do modelo: ${text}` }) };
+  }
+
+  const { results } = await modelRes.json();
+  const versionId = results[0].id;
+
+  // Cria a predição com a versão correta
+  const response = await fetch('https://api.replicate.com/v1/predictions', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
+      version: versionId,
       input: {
         image: `data:${mimeType};base64,${imageBase64}`,
       },
