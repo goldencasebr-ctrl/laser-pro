@@ -29,6 +29,7 @@ export function useCanvasTransform() {
   };
 
   const handleWheel = (e: WheelEvent) => {
+    e.preventDefault();
     const delta = e.deltaY > 0 ? 0.9 : 1.1;
     setZoom(prev => Math.min(5, Math.max(0.1, prev * delta)));
   };

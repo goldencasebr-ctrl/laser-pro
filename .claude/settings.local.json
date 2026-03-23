@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Bash(npm install:*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "WebSearch",
+      "WebFetch(domain:replicate.com)",
+      "WebFetch(domain:blog.cloudflare.com)",
+      "WebFetch(domain:api.replicate.com)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

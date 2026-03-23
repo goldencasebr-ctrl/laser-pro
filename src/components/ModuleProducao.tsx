@@ -23,28 +23,32 @@ interface Product {
   id: string;
   name: string;
   type: 'round' | 'rect';
-  size: number | [number, number]; // mm
+  size: number | [number, number];
 }
 
 const PRODUCTS: Product[] = [
-  { id: 'r15', name: 'Redondo 15mm', type: 'round', size: 15 },
-  { id: 'r20', name: 'Redondo 20mm', type: 'round', size: 20 },
-  { id: 'r25', name: 'Redondo 25mm', type: 'round', size: 25 },
-  { id: 'r30', name: 'Redondo 30mm', type: 'round', size: 30 },
-  { id: 'rect2135', name: 'Retangular 21x35mm', type: 'rect', size: [21, 35] },
+  { id: 'r15',      name: 'Redondo 15mm',       type: 'round', size: 15 },
+  { id: 'r20',      name: 'Redondo 20mm',       type: 'round', size: 20 },
+  { id: 'r25',      name: 'Redondo 25mm',       type: 'round', size: 25 },
+  { id: 'r30',      name: 'Redondo 30mm',       type: 'round', size: 30 },
+  { id: 'rect2135', name: 'Retangular 21x35mm', type: 'rect',  size: [21, 35] },
 ];
 
 export default function ModuleProducao() {
-  const [file, setFile] = useState<File | null>(null);
-  const [img, setImg] = useState<HTMLImageElement | null>(null);
-  const [processedImg, setProcessedImg] = useState<HTMLImageElement | null>(null);
-  const [selectedProduct, setSelectedProduct] = useState<Product>(PRODUCTS[1]); // 20mm
-  const [tolerance, setTolerance] = useState(200);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [file, setFile]                       = useState<File | null>(null);
+  const [img, setImg]                         = useState<HTMLImageElement | null>(null);
+  const [processedImg, setProcessedImg]       = useState<HTMLImageElement | null>(null);
+  const [selectedProduct, setSelectedProduct] = useState<Product>(PRODUCTS[1]);
+  const [tolerance, setTolerance]             = useState(200);
+  const [loading, setLoading]                 = useState(false);
+  const [error, setError]                     = useState<string | null>(null);
+  const [isDragOver, setIsDragOver]           = useState(false);
+  const [canvasSize, setCanvasSize]           = useState(400);
 
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const canvasRef      = useRef<HTMLCanvasElement>(null);
+  const containerRef   = useRef<HTMLDivElement>(null);
+  const inputRef       = useRef<HTMLInputElement>(null);
+  const toleranceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const {
     offsetX, offsetY,
@@ -54,18 +58,28 @@ export default function ModuleProducao() {
     reset: resetTransform,
   } = useCanvasTransform();
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
+  // ── Responsive canvas via ResizeObserver ───────────────────────────────────
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => {
+      const { width, height } = el.getBoundingClientRect();
+      const size = Math.max(Math.min(Math.floor(Math.min(width, height) * 0.88), 900), 320);
+      setCanvasSize(size);
+    };
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    update();
+    return () => ro.disconnect();
+  }, []);
+
+  // ── Upload / drag-and-drop ─────────────────────────────────────────────────
+  const handleFileAccepted = async (f: File) => {
     const validationError = validateImageFile(f);
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
+    if (validationError) { setError(validationError); return; }
     setError(null);
     setFile(f);
     resetTransform();
-
     const objectUrl = URL.createObjectURL(f);
     try {
       const loaded = await loadImage(objectUrl);
@@ -76,10 +90,26 @@ export default function ModuleProducao() {
     }
   };
 
+  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (f) handleFileAccepted(f);
+  };
+
+  const handleDragOver  = (e: React.DragEvent) => e.preventDefault();
+  const handleDragEnter = (e: React.DragEvent) => { e.preventDefault(); setIsDragOver(true); };
+  const handleDragLeave = (e: React.DragEvent) => { e.preventDefault(); setIsDragOver(false); };
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const f = e.dataTransfer.files[0];
+    if (f) handleFileAccepted(f);
+  };
+
+  // ── Image processing ───────────────────────────────────────────────────────
   const processImage = useCallback(async (baseImg: HTMLImageElement, tol: number) => {
     setLoading(true);
     const offCanvas = document.createElement('canvas');
-    offCanvas.width = baseImg.width;
+    offCanvas.width  = baseImg.width;
     offCanvas.height = baseImg.height;
     const ctx = offCanvas.getContext('2d');
     if (!ctx) return;
@@ -90,31 +120,51 @@ export default function ModuleProducao() {
     setLoading(false);
   }, []);
 
+  // Debounced tolerance: waits 180ms after last slider move
   useEffect(() => {
-    if (img) processImage(img, tolerance);
+    if (!img) return;
+    if (toleranceTimer.current) clearTimeout(toleranceTimer.current);
+    toleranceTimer.current = setTimeout(() => {
+      processImage(img, tolerance);
+    }, 180);
+    return () => {
+      if (toleranceTimer.current) clearTimeout(toleranceTimer.current);
+    };
   }, [tolerance, img, processImage]);
 
-  // Render preview on canvas
+  // ── Canvas render (HiDPI-aware) ────────────────────────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !processedImg) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const W = canvas.width;
-    const H = canvas.height;
+    // Apply device pixel ratio for sharp rendering on Retina / HiDPI screens
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width  = canvasSize * dpr;
+    canvas.height = canvasSize * dpr;
+    canvas.style.width  = `${canvasSize}px`;
+    canvas.style.height = `${canvasSize}px`;
+    ctx.scale(dpr, dpr);
+
+    const W = canvasSize;
+    const H = canvasSize;
     ctx.clearRect(0, 0, W, H);
+
+    // Product preview dimensions relative to canvas size
+    const previewRadius = W * 0.30;
+    const previewRectW  = W * 0.375;
+    const previewRectH  = previewRectW * (35 / 21);
 
     const baseScale = Math.min(W / processedImg.width, H / processedImg.height) * 0.8;
 
+    // Clip to product shape
     ctx.save();
     ctx.beginPath();
     if (selectedProduct.type === 'round') {
-      ctx.arc(W / 2, H / 2, 120, 0, Math.PI * 2);
+      ctx.arc(W / 2, H / 2, previewRadius, 0, Math.PI * 2);
     } else {
-      const rw = 150;
-      const rh = rw * (35 / 21);
-      ctx.rect(W / 2 - rw / 2, H / 2 - rh / 2, rw, rh);
+      ctx.rect(W / 2 - previewRectW / 2, H / 2 - previewRectH / 2, previewRectW, previewRectH);
     }
     ctx.closePath();
     ctx.clip();
@@ -127,31 +177,29 @@ export default function ModuleProducao() {
     ctx.restore();
     ctx.restore();
 
-    // Stroke outline
+    // Product outline
     ctx.save();
     ctx.strokeStyle = '#10b981';
-    ctx.lineWidth = 2;
+    ctx.lineWidth   = 1.5;
     ctx.setLineDash([5, 5]);
     if (selectedProduct.type === 'round') {
       ctx.beginPath();
-      ctx.arc(W / 2, H / 2, 120, 0, Math.PI * 2);
+      ctx.arc(W / 2, H / 2, previewRadius, 0, Math.PI * 2);
       ctx.stroke();
     } else {
-      const rw = 150;
-      const rh = rw * (35 / 21);
-      ctx.strokeRect(W / 2 - rw / 2, H / 2 - rh / 2, rw, rh);
+      ctx.strokeRect(W / 2 - previewRectW / 2, H / 2 - previewRectH / 2, previewRectW, previewRectH);
     }
     ctx.restore();
-  }, [processedImg, offsetX, offsetY, zoom, rotation, selectedProduct]);
+  }, [processedImg, offsetX, offsetY, zoom, rotation, selectedProduct, canvasSize]);
 
+  // ── Final export canvas ────────────────────────────────────────────────────
   const getFinalCanvas = (): HTMLCanvasElement | null => {
     if (!processedImg) return null;
 
     const maxDim = Math.max(processedImg.width, processedImg.height);
     const outCanvas = document.createElement('canvas');
 
-    let outW: number;
-    let outH: number;
+    let outW: number, outH: number;
     if (selectedProduct.type === 'round') {
       outW = outH = maxDim;
     } else {
@@ -159,13 +207,15 @@ export default function ModuleProducao() {
       outW = maxDim * (21 / 35);
     }
 
-    outCanvas.width = outW;
+    outCanvas.width  = outW;
     outCanvas.height = outH;
     const ctx = outCanvas.getContext('2d');
     if (!ctx) return null;
 
-    const outScale = outW / (selectedProduct.type === 'round' ? 240 : 150);
-    const baseScale = Math.min(400 / processedImg.width, 400 / processedImg.height) * 0.8;
+    const previewRadius = canvasSize * 0.30;
+    const previewRectW  = canvasSize * 0.375;
+    const outScale  = outW / (selectedProduct.type === 'round' ? previewRadius * 2 : previewRectW);
+    const baseScale = Math.min(canvasSize / processedImg.width, canvasSize / processedImg.height) * 0.8;
 
     ctx.save();
     ctx.translate(outW / 2 + offsetX * outScale, outH / 2 + offsetY * outScale);
@@ -174,8 +224,9 @@ export default function ModuleProducao() {
     ctx.drawImage(processedImg, -processedImg.width / 2, -processedImg.height / 2);
     ctx.restore();
 
+    // Clip mask
     const clipCanvas = document.createElement('canvas');
-    clipCanvas.width = outW;
+    clipCanvas.width  = outW;
     clipCanvas.height = outH;
     const clipCtx = clipCanvas.getContext('2d')!;
     if (selectedProduct.type === 'round') {
@@ -192,13 +243,14 @@ export default function ModuleProducao() {
     return outCanvas;
   };
 
+  // ── Downloads ──────────────────────────────────────────────────────────────
   const downloadPNG = () => {
     setLoading(true);
     try {
       const canvas = getFinalCanvas();
       if (!canvas) return;
       const link = document.createElement('a');
-      link.href = canvas.toDataURL('image/png');
+      link.href     = canvas.toDataURL('image/png');
       link.download = `arte_${selectedProduct.name}.png`;
       link.click();
     } catch (err) {
@@ -214,13 +266,12 @@ export default function ModuleProducao() {
       const canvas = getFinalCanvas();
       if (!canvas) return;
 
-      const ctx = canvas.getContext('2d')!;
-      const outW = canvas.width;
-      const outH = canvas.height;
+      const ctx   = canvas.getContext('2d')!;
+      const outW  = canvas.width;
+      const outH  = canvas.height;
       const outData = ctx.getImageData(0, 0, outW, outH);
-      const d = outData.data;
+      const d     = outData.data;
 
-      // Convert to solid black for tracing
       for (let i = 0; i < d.length; i += 4) {
         if (d[i + 3] > 10) {
           d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 255;
@@ -230,12 +281,9 @@ export default function ModuleProducao() {
       }
 
       // @ts-ignore
-      const tracer = ImageTracer.default || ImageTracer;
-      const svgStr = tracer.imagedataToSVG(outData, {
-        colorsampling: 0,
-        numberofcolors: 2,
-        strokewidth: 0,
-        pathomit: 8,
+      const tracer  = ImageTracer.default || ImageTracer;
+      const svgStr  = tracer.imagedataToSVG(outData, {
+        colorsampling: 0, numberofcolors: 2, strokewidth: 0, pathomit: 8,
       });
 
       const sizeStr = Array.isArray(selectedProduct.size)
@@ -243,11 +291,10 @@ export default function ModuleProducao() {
         : `width="${selectedProduct.size}mm" height="${selectedProduct.size}mm"`;
 
       const finalSvg = svgStr.replace('<svg ', `<svg ${sizeStr} `);
-
-      const blob = new Blob([finalSvg], { type: 'image/svg+xml' });
-      const svgUrl = URL.createObjectURL(blob);
-      const svgLink = document.createElement('a');
-      svgLink.href = svgUrl;
+      const blob     = new Blob([finalSvg], { type: 'image/svg+xml' });
+      const svgUrl   = URL.createObjectURL(blob);
+      const svgLink  = document.createElement('a');
+      svgLink.href     = svgUrl;
       svgLink.download = `silhueta_${selectedProduct.name}.svg`;
       svgLink.click();
       setTimeout(() => URL.revokeObjectURL(svgUrl), 100);
@@ -274,14 +321,24 @@ export default function ModuleProducao() {
       exit={{ opacity: 0, scale: 1.05 }}
       className="flex-1 flex overflow-hidden"
     >
-      {/* Left: Controls */}
+      {/* ── Left: Controls ── */}
       <div className="w-80 border-r border-white/5 bg-[#111111] p-6 flex flex-col gap-6 overflow-y-auto">
         <div className="flex items-center gap-2 text-zinc-400 font-bold text-xs uppercase tracking-widest">
           <Settings2 size={16} /> <Layout size={16} /> Produção
         </div>
 
         {!img ? (
-          <div className="border-2 border-dashed border-white/10 rounded-xl p-8 flex flex-col items-center justify-center text-center bg-white/[0.02] hover:bg-white/[0.04] cursor-pointer relative">
+          <div
+            onDragOver={handleDragOver}
+            onDragEnter={handleDragEnter}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center text-center transition-colors cursor-pointer relative
+              ${isDragOver
+                ? 'border-emerald-500/60 bg-emerald-500/5'
+                : 'border-white/10 bg-white/[0.02] hover:bg-white/[0.04]'
+              }`}
+          >
             <input
               ref={inputRef}
               type="file"
@@ -289,8 +346,10 @@ export default function ModuleProducao() {
               onChange={handleUpload}
               className="absolute inset-0 opacity-0 cursor-pointer"
             />
-            <Upload className="text-zinc-600 mb-2" />
-            <p className="text-xs font-medium text-zinc-400">Carregar Matriz B&W</p>
+            <Upload className={`mb-2 transition-colors ${isDragOver ? 'text-emerald-400' : 'text-zinc-600'}`} />
+            <p className="text-xs font-medium text-zinc-400">
+              {isDragOver ? 'Solte a imagem aqui' : 'Carregar Matriz B&W'}
+            </p>
             <p className="text-[10px] text-zinc-600 mt-1">PNG, JPG ou WEBP · Máx. 10 MB</p>
             {error && (
               <div className="mt-3 flex items-center gap-2 text-red-400 text-xs">
@@ -392,8 +451,11 @@ export default function ModuleProducao() {
         )}
       </div>
 
-      {/* Center: Canvas */}
-      <div className="flex-1 bg-black relative flex items-center justify-center overflow-hidden">
+      {/* ── Center: Canvas ── */}
+      <div
+        ref={containerRef}
+        className="flex-1 bg-black relative flex items-center justify-center overflow-hidden"
+      >
         <div className="absolute top-4 right-4 z-10">
           <div className="bg-black/50 backdrop-blur-md p-2 rounded-lg border border-white/10 text-[10px] text-zinc-500 uppercase tracking-widest font-bold">
             Preview Interativo
@@ -402,14 +464,13 @@ export default function ModuleProducao() {
 
         <canvas
           ref={canvasRef}
-          width={400}
-          height={400}
+          style={{ width: canvasSize, height: canvasSize, cursor: 'move' }}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseUp}
           onWheel={handleWheel}
-          className="cursor-move bg-zinc-900 shadow-2xl rounded-lg border border-white/5"
+          className="shadow-2xl rounded-lg border border-white/5 bg-zinc-900"
         />
 
         {loading && (
