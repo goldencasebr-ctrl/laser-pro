@@ -1,3 +1,5 @@
+const BIREFNET_VERSION = 'f74986db0355b58403ed20963af156525e2891ea3c2d499bfbfb2a28cd87c5d7';
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, body: 'Method Not Allowed' };
@@ -19,23 +21,12 @@ exports.handler = async (event) => {
   }
 
   if (!imageBase64 || !mimeType) {
-    return { statusCode: 400, body: JSON.stringify({ error: 'imageBase64 e mimeType são obrigatórios.' }) };
+    return {
+      statusCode: 400,
+      body: JSON.stringify({ error: 'imageBase64 e mimeType são obrigatórios.' }),
+    };
   }
 
-  // Busca o ID da versão mais recente do modelo rembg
-  const modelRes = await fetch('https://api.replicate.com/v1/models/cjwbw/rembg/versions', {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  if (!modelRes.ok) {
-    const text = await modelRes.text();
-    return { statusCode: modelRes.status, body: JSON.stringify({ error: `Erro ao buscar versão do modelo: ${text}` }) };
-  }
-
-  const { results } = await modelRes.json();
-  const versionId = results[0].id;
-
-  // Cria a predição com a versão correta
   const response = await fetch('https://api.replicate.com/v1/predictions', {
     method: 'POST',
     headers: {
@@ -43,9 +34,10 @@ exports.handler = async (event) => {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      version: versionId,
+      version: BIREFNET_VERSION,
       input: {
         image: `data:${mimeType};base64,${imageBase64}`,
+        // resolution omitido → saída na resolução original da imagem
       },
     }),
   });
