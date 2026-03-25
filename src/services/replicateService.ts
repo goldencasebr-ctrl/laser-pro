@@ -11,7 +11,10 @@ export async function removeBackgroundAPI(file: File): Promise<string> {
   //    — sem conversão para base64, sem limite de tamanho da Netlify Function
   const uploadRes = await fetch('/api/upload-file', {
     method: 'POST',
-    headers: { 'Content-Type': file.type },
+    headers: {
+      'Content-Type': file.type,
+      'X-File-Name':  file.name,
+    },
     body: file,
   });
 

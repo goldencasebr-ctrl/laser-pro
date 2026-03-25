@@ -17,6 +17,7 @@ export default async (request: Request) => {
   }
 
   const contentType = request.headers.get('Content-Type') ?? 'application/octet-stream';
+  const fileName    = request.headers.get('X-File-Name')  ?? 'image.jpg';
 
   // Lê o arquivo binário completo da requisição do browser
   const body = await request.arrayBuffer();
@@ -25,8 +26,10 @@ export default async (request: Request) => {
   const replicateRes = await fetch('https://api.replicate.com/v1/files', {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': contentType,
+      Authorization:       `Bearer ${token}`,
+      'Content-Type':      contentType,
+      'Content-Length':    String(body.byteLength),
+      'Content-Disposition': `attachment; filename="${fileName}"`,
     },
     body,
   });
