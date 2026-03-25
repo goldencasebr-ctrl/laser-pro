@@ -17,33 +17,40 @@ export default async (request: Request) => {
   }
 
   const contentType = request.headers.get('Content-Type') ?? 'application/octet-stream';
-  const rawName    = request.headers.get('X-File-Name') ?? 'image.jpg';
-  // Remove caracteres especiais do nome do arquivo
-  const fileName   = rawName.replace(/[^a-zA-Z0-9._-]/g, '_');
 
-  // Lê o body como Uint8Array — mais confiável que ArrayBuffer no Deno
-  const bytes = new Uint8Array(await request.arrayBuffer());
+  // — DIAGNÓSTICO: verifica se o body chega aqui —
+  const arrayBuffer = await request.arrayBuffer();
 
-  // Content-Length é header proibido na Fetch API — o Deno calcula automaticamente
+  if (arrayBuffer.byteLength === 0) {
+    return new Response(
+      JSON.stringify({ error: `DIAG: body chegou VAZIO. Content-Type=${contentType}` }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
+  // Usa Blob — mais confiável no Deno para envio via fetch
+  const blob = new Blob([arrayBuffer], { type: contentType });
+
   const replicateRes = await fetch('https://api.replicate.com/v1/files', {
     method: 'POST',
     headers: {
-      Authorization:         `Bearer ${token}`,
-      'Content-Type':        contentType,
-      'Content-Disposition': `attachment; filename="${fileName}"`,
+      Authorization: `Bearer ${token}`,
     },
-    body: bytes,
+    body: blob,
   });
 
+  const responseText = await replicateRes.text();
+
   if (!replicateRes.ok) {
-    const err = await replicateRes.json().catch(() => ({})) as { detail?: string };
     return new Response(
-      JSON.stringify({ error: err.detail ?? `Falha no upload (${replicateRes.status}).` }),
+      JSON.stringify({
+        error: `Replicate ${replicateRes.status}: ${responseText} | bodySize=${arrayBuffer.byteLength}`,
+      }),
       { status: replicateRes.status, headers: { 'Content-Type': 'application/json' } },
     );
   }
 
-  const file = await replicateRes.json() as { urls: { get: string } };
+  const file = JSON.parse(responseText) as { urls: { get: string } };
 
   return new Response(JSON.stringify({ url: file.urls.get }), {
     status: 200,
