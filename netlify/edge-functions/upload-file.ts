@@ -17,21 +17,22 @@ export default async (request: Request) => {
   }
 
   const contentType = request.headers.get('Content-Type') ?? 'application/octet-stream';
-  const fileName    = request.headers.get('X-File-Name')  ?? 'image.jpg';
+  const rawName    = request.headers.get('X-File-Name') ?? 'image.jpg';
+  // Remove caracteres especiais do nome do arquivo
+  const fileName   = rawName.replace(/[^a-zA-Z0-9._-]/g, '_');
 
-  // Lê o arquivo binário completo da requisição do browser
-  const body = await request.arrayBuffer();
+  // Lê o body como Uint8Array — mais confiável que ArrayBuffer no Deno
+  const bytes = new Uint8Array(await request.arrayBuffer());
 
-  // Envia diretamente ao Replicate Files API — sem base64, sem limite de Lambda
+  // Content-Length é header proibido na Fetch API — o Deno calcula automaticamente
   const replicateRes = await fetch('https://api.replicate.com/v1/files', {
     method: 'POST',
     headers: {
-      Authorization:       `Bearer ${token}`,
-      'Content-Type':      contentType,
-      'Content-Length':    String(body.byteLength),
+      Authorization:         `Bearer ${token}`,
+      'Content-Type':        contentType,
       'Content-Disposition': `attachment; filename="${fileName}"`,
     },
-    body,
+    body: bytes,
   });
 
   if (!replicateRes.ok) {
