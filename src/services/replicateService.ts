@@ -1,27 +1,32 @@
 const POLL_INTERVAL_MS = 2_000;
-const MAX_WAIT_MS = 120_000;
-
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = () => resolve((reader.result as string).split(',')[1]);
-    reader.onerror = reject;
-  });
-}
+const MAX_WAIT_MS      = 120_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function removeBackgroundAPI(file: File): Promise<string> {
-  const imageBase64 = await fileToBase64(file);
 
-  // 1. Inicia a predição no Replicate
+  // 1. Upload do arquivo binário direto ao Replicate via Edge Function
+  //    — sem conversão para base64, sem limite de tamanho da Netlify Function
+  const uploadRes = await fetch('/api/upload-file', {
+    method: 'POST',
+    headers: { 'Content-Type': file.type },
+    body: file,
+  });
+
+  if (!uploadRes.ok) {
+    const payload = await uploadRes.json().catch(() => ({})) as { error?: string };
+    throw new Error(payload.error ?? `Erro ${uploadRes.status} no upload da imagem.`);
+  }
+
+  const { url: imageUrl } = await uploadRes.json() as { url: string };
+
+  // 2. Inicia a predição no Replicate passando apenas a URL (payload mínimo)
   const startRes = await fetch('/api/start-prediction', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ imageBase64, mimeType: file.type }),
+    body: JSON.stringify({ imageUrl }),
   });
 
   if (!startRes.ok) {
@@ -31,7 +36,7 @@ export async function removeBackgroundAPI(file: File): Promise<string> {
 
   const { id } = await startRes.json() as { id: string };
 
-  // 2. Polling até o resultado ficar pronto
+  // 3. Polling até o resultado ficar pronto
   const deadline = Date.now() + MAX_WAIT_MS;
 
   while (Date.now() < deadline) {

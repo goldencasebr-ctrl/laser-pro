@@ -13,17 +13,17 @@ exports.handler = async (event) => {
     };
   }
 
-  let imageBase64, mimeType;
+  let imageUrl;
   try {
-    ({ imageBase64, mimeType } = JSON.parse(event.body || '{}'));
+    ({ imageUrl } = JSON.parse(event.body || '{}'));
   } catch {
     return { statusCode: 400, body: JSON.stringify({ error: 'Body inválido.' }) };
   }
 
-  if (!imageBase64 || !mimeType) {
+  if (!imageUrl) {
     return {
       statusCode: 400,
-      body: JSON.stringify({ error: 'imageBase64 e mimeType são obrigatórios.' }),
+      body: JSON.stringify({ error: 'imageUrl é obrigatório.' }),
     };
   }
 
@@ -36,7 +36,7 @@ exports.handler = async (event) => {
     body: JSON.stringify({
       version: BIREFNET_VERSION,
       input: {
-        image: `data:${mimeType};base64,${imageBase64}`,
+        image: imageUrl,
         // resolution omitido → saída na resolução original da imagem
       },
     }),

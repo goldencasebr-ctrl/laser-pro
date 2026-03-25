@@ -3,6 +3,10 @@
   publish = "dist"
   functions = "netlify/functions"
 
+[[edge_functions]]
+  path = "/api/upload-file"
+  function = "upload-file"
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"
