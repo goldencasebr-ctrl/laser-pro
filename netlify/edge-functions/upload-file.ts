@@ -1,5 +1,7 @@
 import type { Config } from "@netlify/edge-functions";
 
+const BIREFNET_VERSION = 'f74986db0355b58403ed20963af156525e2891ea3c2d499bfbfb2a28cd87c5d7';
+
 export default async (request: Request) => {
   if (request.method !== 'POST') {
     return new Response(JSON.stringify({ error: 'Method Not Allowed' }), {
@@ -18,44 +20,40 @@ export default async (request: Request) => {
 
   const contentType = request.headers.get('Content-Type') ?? 'application/octet-stream';
 
-  // — DIAGNÓSTICO: verifica se o body chega aqui —
+  // Recebe o arquivo binário e converte para base64 data URL
   const arrayBuffer = await request.arrayBuffer();
+  const bytes       = new Uint8Array(arrayBuffer);
+  const binary      = bytes.reduce((s, b) => s + String.fromCharCode(b), '');
+  const base64      = btoa(binary);
+  const dataUrl     = `data:${contentType};base64,${base64}`;
 
-  if (arrayBuffer.byteLength === 0) {
-    return new Response(
-      JSON.stringify({ error: `DIAG: body chegou VAZIO. Content-Type=${contentType}` }),
-      { status: 400, headers: { 'Content-Type': 'application/json' } },
-    );
-  }
-
-  // Usa Blob — mais confiável no Deno para envio via fetch
-  const blob = new Blob([arrayBuffer], { type: contentType });
-
-  const replicateRes = await fetch('https://api.replicate.com/v1/files', {
+  // Inicia a predição direto — sem passar pela Files API
+  const replicateRes = await fetch('https://api.replicate.com/v1/predictions', {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization:  `Bearer ${token}`,
+      'Content-Type': 'application/json',
     },
-    body: blob,
+    body: JSON.stringify({
+      version: BIREFNET_VERSION,
+      input:   { image: dataUrl },
+    }),
   });
 
-  const responseText = await replicateRes.text();
-
   if (!replicateRes.ok) {
+    const err = await replicateRes.json().catch(() => ({})) as { detail?: string };
     return new Response(
-      JSON.stringify({
-        error: `Replicate ${replicateRes.status}: ${responseText} | bodySize=${arrayBuffer.byteLength}`,
-      }),
+      JSON.stringify({ error: err.detail ?? `Erro Replicate ${replicateRes.status}` }),
       { status: replicateRes.status, headers: { 'Content-Type': 'application/json' } },
     );
   }
 
-  const file = JSON.parse(responseText) as { urls: { get: string } };
+  const prediction = await replicateRes.json() as { id: string; status: string };
 
-  return new Response(JSON.stringify({ url: file.urls.get }), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
-  });
+  return new Response(
+    JSON.stringify({ id: prediction.id, status: prediction.status }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
 };
 
 export const config: Config = {

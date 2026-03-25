@@ -7,29 +7,12 @@ function sleep(ms: number): Promise<void> {
 
 export async function removeBackgroundAPI(file: File): Promise<string> {
 
-  // 1. Upload do arquivo binário direto ao Replicate via Edge Function
-  //    — sem conversão para base64, sem limite de tamanho da Netlify Function
-  const uploadRes = await fetch('/api/upload-file', {
+  // 1. Envia o arquivo binário para a Edge Function
+  //    A Edge Function converte para base64 e já inicia a predição no Replicate
+  const startRes = await fetch('/api/upload-file', {
     method: 'POST',
-    headers: {
-      'Content-Type': file.type,
-      'X-File-Name':  file.name,
-    },
+    headers: { 'Content-Type': file.type },
     body: file,
-  });
-
-  if (!uploadRes.ok) {
-    const payload = await uploadRes.json().catch(() => ({})) as { error?: string };
-    throw new Error(payload.error ?? `Erro ${uploadRes.status} no upload da imagem.`);
-  }
-
-  const { url: imageUrl } = await uploadRes.json() as { url: string };
-
-  // 2. Inicia a predição no Replicate passando apenas a URL (payload mínimo)
-  const startRes = await fetch('/api/start-prediction', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ imageUrl }),
   });
 
   if (!startRes.ok) {
@@ -39,7 +22,7 @@ export async function removeBackgroundAPI(file: File): Promise<string> {
 
   const { id } = await startRes.json() as { id: string };
 
-  // 3. Polling até o resultado ficar pronto
+  // 2. Polling até o resultado ficar pronto
   const deadline = Date.now() + MAX_WAIT_MS;
 
   while (Date.now() < deadline) {
@@ -62,8 +45,6 @@ export async function removeBackgroundAPI(file: File): Promise<string> {
     if (status === 'failed' || status === 'canceled') {
       throw new Error(error ?? 'Falha na remoção de fundo. Tente novamente.');
     }
-
-    // status: 'starting' | 'processing' → continua polling
   }
 
   throw new Error('Tempo limite excedido. Tente novamente.');
