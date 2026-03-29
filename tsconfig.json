@@ -22,5 +22,16 @@
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "include": [
+    "src",
+    "netlify/**/*.ts",
+    "netlify/**/*.js",
+    "types/**/*.d.ts",
+    "vite.config.ts"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules"
+  ]
 }

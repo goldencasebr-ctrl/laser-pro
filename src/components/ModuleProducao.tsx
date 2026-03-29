@@ -18,7 +18,6 @@ import {
   Maximize2,
 } from 'lucide-react';
 import { motion } from 'motion/react';
-// @ts-ignore
 import ImageTracer from 'imagetracerjs';
 import { loadImage } from '../utils/imageUtils';
 import { validateImageFile } from '../utils/fileValidation';
@@ -42,10 +41,29 @@ const PRODUCTS: Product[] = [
 
 const BG_STEPS = ['Enviando imagem...', 'Processando com IA...', 'Finalizando...'];
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function getProductMmDimensions(product: Product): [number, number] {
+  if (Array.isArray(product.size)) return product.size;
+  return [product.size, product.size];
+}
+
+function getProductAspectRatio(product: Product): number {
+  const [widthMm, heightMm] = getProductMmDimensions(product);
+  return heightMm / widthMm;
+}
+
 // ── Pure helper: raster canvas → SVG silhouette string ──────────────────────
 // Works cleanly with BIRefNet output: alpha > 0 = subject, alpha = 0 = background
 function buildSilhouetteSvg(canvas: HTMLCanvasElement): string {
-  const ctx  = canvas.getContext('2d')!;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Nao foi possivel ler o canvas final.');
   const outW = canvas.width;
   const outH = canvas.height;
   const outData = ctx.getImageData(0, 0, outW, outH);
@@ -59,7 +77,6 @@ function buildSilhouetteSvg(canvas: HTMLCanvasElement): string {
     }
   }
 
-  // @ts-ignore
   const tracer = ImageTracer.default || ImageTracer;
   return tracer.imagedataToSVG(outData, {
     colorsampling: 0, numberofcolors: 2, strokewidth: 0, pathomit: 8,
@@ -67,11 +84,22 @@ function buildSilhouetteSvg(canvas: HTMLCanvasElement): string {
 }
 
 function injectMmDimensions(svgStr: string, product: Product): string {
-  const w = Array.isArray(product.size) ? product.size[0] : product.size;
-  const h = Array.isArray(product.size) ? product.size[1] : product.size;
-  return svgStr
-    .replace(/width="[^"]*"/, `width="${w}mm"`)
-    .replace(/height="[^"]*"/, `height="${h}mm"`);
+  const [widthMm, heightMm] = getProductMmDimensions(product);
+  let output = svgStr;
+
+  output = /width="[^"]*"/.test(output)
+    ? output.replace(/width="[^"]*"/, `width="${widthMm}mm"`)
+    : output.replace('<svg', `<svg width="${widthMm}mm"`);
+
+  output = /height="[^"]*"/.test(output)
+    ? output.replace(/height="[^"]*"/, `height="${heightMm}mm"`)
+    : output.replace('<svg', `<svg height="${heightMm}mm"`);
+
+  if (!/preserveAspectRatio=/.test(output)) {
+    output = output.replace('<svg', '<svg preserveAspectRatio="xMidYMid meet"');
+  }
+
+  return output;
 }
 
 export default function ModuleProducao() {
@@ -105,6 +133,10 @@ export default function ModuleProducao() {
   const svgUrlRef           = useRef<string | null>(null);
   const svgStrRef           = useRef<string | null>(null);
   const silhouetteJobRef    = useRef(0);
+  const bgRequestIdRef      = useRef(0);
+  const bgAbortControllerRef = useRef<AbortController | null>(null);
+  const applyImageRequestIdRef = useRef(0);
+  const applyImageAbortControllerRef = useRef<AbortController | null>(null);
 
   const {
     offsetX, offsetY,
@@ -114,15 +146,38 @@ export default function ModuleProducao() {
     reset: resetTransform,
   } = useCanvasTransform();
 
+  const clearLoadingTimer = useCallback(() => {
+    if (stepTimerRef.current) {
+      clearInterval(stepTimerRef.current);
+      stepTimerRef.current = null;
+    }
+  }, []);
+
+  const cancelBgRequest = useCallback(() => {
+    bgRequestIdRef.current += 1;
+    bgAbortControllerRef.current?.abort();
+    bgAbortControllerRef.current = null;
+    clearLoadingTimer();
+    setBgLoading(false);
+    setBgStep(0);
+  }, [clearLoadingTimer]);
+
+  const cancelApplyImageRequest = useCallback(() => {
+    applyImageRequestIdRef.current += 1;
+    applyImageAbortControllerRef.current?.abort();
+    applyImageAbortControllerRef.current = null;
+  }, []);
+
   // ── Cleanup on unmount ─────────────────────────────────────────────────────
   useEffect(() => {
     return () => {
+      cancelBgRequest();
+      cancelApplyImageRequest();
       if (objectUrlRef.current)       URL.revokeObjectURL(objectUrlRef.current);
       if (processedImgUrlRef.current) URL.revokeObjectURL(processedImgUrlRef.current);
       if (svgUrlRef.current)          URL.revokeObjectURL(svgUrlRef.current);
-      if (stepTimerRef.current)       clearInterval(stepTimerRef.current);
     };
-  }, []);
+  }, [cancelApplyImageRequest, cancelBgRequest]);
 
   const clearSilhouette = useCallback(() => {
     silhouetteJobRef.current += 1;
@@ -141,7 +196,7 @@ export default function ModuleProducao() {
     const el = containerRef.current;
     if (!el) return;
     const { width, height } = el.getBoundingClientRect();
-    const columns = etapa === 2 ? 2 : 1;
+    const columns = etapa === 2 && width >= 1024 ? 2 : 1;
     const availW  = width / columns - (columns > 1 ? 32 : 0);
     const size    = Math.max(Math.min(Math.floor(Math.min(availW, height) * 0.88), 900), 260);
     setCanvasSize(size);
@@ -164,6 +219,8 @@ export default function ModuleProducao() {
     if (validationError) { setBgError(validationError); return; }
 
     // Limpar estado anterior
+    cancelBgRequest();
+    cancelApplyImageRequest();
     if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
     const url = URL.createObjectURL(f);
     objectUrlRef.current = url;
@@ -172,37 +229,53 @@ export default function ModuleProducao() {
     setOriginalUrl(url);
     setResultUrl(null);
     setBgError(null);
+    setProcessedImg(null);
+    setEtapa(1);
     clearSilhouette();
+    resetTransform();
 
     // Auto-disparar remoção de fundo
     await triggerBgRemoval(f);
   };
 
   const triggerBgRemoval = async (f: File) => {
+    bgRequestIdRef.current += 1;
+    const requestId = bgRequestIdRef.current;
+    bgAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    bgAbortControllerRef.current = controller;
+
     setBgLoading(true);
     setBgStep(0);
     setBgError(null);
 
     let step = 0;
+    clearLoadingTimer();
     stepTimerRef.current = setInterval(() => {
       step = Math.min(step + 1, BG_STEPS.length - 1);
       setBgStep(step);
     }, 2_000);
 
     try {
-      const output = await removeBackgroundAPI(f);
+      const output = await removeBackgroundAPI(f, { signal: controller.signal });
+      if (requestId !== bgRequestIdRef.current) return;
       setResultUrl(output);
-    } catch (err: any) {
-      setBgError(err.message ?? 'Erro ao processar. Tente novamente.');
+    } catch (error: unknown) {
+      if (requestId !== bgRequestIdRef.current || isAbortError(error)) return;
+      setBgError(getErrorMessage(error, 'Erro ao processar. Tente novamente.'));
     } finally {
-      if (stepTimerRef.current) { clearInterval(stepTimerRef.current); stepTimerRef.current = null; }
+      if (requestId !== bgRequestIdRef.current) return;
+      clearLoadingTimer();
       setBgLoading(false);
+      if (bgAbortControllerRef.current === controller) {
+        bgAbortControllerRef.current = null;
+      }
     }
   };
 
   const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
-    if (f) handleFileAccepted(f);
+    if (f) void handleFileAccepted(f);
   };
   const handleDragOver  = (e: React.DragEvent) => e.preventDefault();
   const handleDragEnter = (e: React.DragEvent) => { e.preventDefault(); setIsDragOver(true); };
@@ -210,13 +283,14 @@ export default function ModuleProducao() {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault(); setIsDragOver(false);
     const f = e.dataTransfer.files[0];
-    if (f) handleFileAccepted(f);
+    if (f) void handleFileAccepted(f);
   };
 
   const handleReset = () => {
+    cancelBgRequest();
+    cancelApplyImageRequest();
     if (objectUrlRef.current)       { URL.revokeObjectURL(objectUrlRef.current);       objectUrlRef.current = null; }
     if (processedImgUrlRef.current) { URL.revokeObjectURL(processedImgUrlRef.current); processedImgUrlRef.current = null; }
-    if (stepTimerRef.current)       { clearInterval(stepTimerRef.current);              stepTimerRef.current = null; }
     clearSilhouette();
     setFile(null); setOriginalUrl(null); setResultUrl(null);
     setBgError(null); setBgLoading(false);
@@ -227,21 +301,48 @@ export default function ModuleProducao() {
   };
 
   // ── Etapa 1 → 2: aplicar imagem no produto ────────────────────────────────
+  const handleBackToStepOne = () => {
+    cancelApplyImageRequest();
+    setEtapa(1);
+  };
+
   const aplicarImagem = async () => {
     if (!resultUrl) return;
+
+    applyImageRequestIdRef.current += 1;
+    const requestId = applyImageRequestIdRef.current;
+    applyImageAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    applyImageAbortControllerRef.current = controller;
+
     setEtapa(2);
+    setBgError(null);
+    setProcessedImg(null);
     resetTransform();
     clearSilhouette();
     try {
-      const res  = await fetch(resultUrl);
+      const res = await fetch(resultUrl, { signal: controller.signal });
+      if (!res.ok) {
+        throw new Error(`Erro ${res.status} ao carregar a imagem processada.`);
+      }
+
       const blob = await res.blob();
-      const url  = URL.createObjectURL(blob);
+      if (requestId !== applyImageRequestIdRef.current) return;
+
+      const url = URL.createObjectURL(blob);
       if (processedImgUrlRef.current) URL.revokeObjectURL(processedImgUrlRef.current);
       processedImgUrlRef.current = url;
       const loaded = await loadImage(url);
+      if (requestId !== applyImageRequestIdRef.current) return;
       setProcessedImg(loaded);
-    } catch {
+    } catch (error: unknown) {
+      if (requestId !== applyImageRequestIdRef.current || isAbortError(error)) return;
       setEtapa(1);
+      setBgError('Nao foi possivel carregar a imagem processada na etapa de producao. Tente remover o fundo novamente.');
+    } finally {
+      if (applyImageAbortControllerRef.current === controller) {
+        applyImageAbortControllerRef.current = null;
+      }
     }
   };
 
@@ -257,14 +358,14 @@ export default function ModuleProducao() {
     canvas.height = canvasSize * dpr;
     canvas.style.width  = `${canvasSize}px`;
     canvas.style.height = `${canvasSize}px`;
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     const W = canvasSize, H = canvasSize;
     ctx.clearRect(0, 0, W, H);
 
     const previewRadius = W * 0.44;
     const previewRectW  = W * 0.55;
-    const previewRectH  = previewRectW * (35 / 21);
+    const previewRectH  = previewRectW * getProductAspectRatio(selectedProduct);
     const baseScale = Math.min(W / processedImg.width, H / processedImg.height) * 0.8;
 
     ctx.save();
@@ -300,7 +401,7 @@ export default function ModuleProducao() {
   }, [processedImg, offsetX, offsetY, zoom, rotation, selectedProduct, canvasSize]);
 
   // ── Etapa 2: canvas de exportação ─────────────────────────────────────────
-  const getFinalCanvas = (): HTMLCanvasElement | null => {
+  const getFinalCanvas = useCallback((): HTMLCanvasElement | null => {
     if (!processedImg) return null;
 
     const maxDim = Math.max(processedImg.width, processedImg.height);
@@ -310,8 +411,9 @@ export default function ModuleProducao() {
     if (selectedProduct.type === 'round') {
       outW = outH = maxDim;
     } else {
+      const [widthMm, heightMm] = getProductMmDimensions(selectedProduct);
       outH = maxDim;
-      outW = maxDim * (21 / 35);
+      outW = maxDim * (widthMm / heightMm);
     }
 
     outCanvas.width  = outW;
@@ -346,7 +448,7 @@ export default function ModuleProducao() {
     ctx.drawImage(clipCanvas, 0, 0);
 
     return outCanvas;
-  };
+  }, [canvasSize, offsetX, offsetY, processedImg, rotation, selectedProduct, zoom]);
 
   // ── Etapa 2: geração de silhueta ───────────────────────────────────────────
   const applySilhouette = useCallback(() => {
@@ -367,14 +469,16 @@ export default function ModuleProducao() {
         svgUrlRef.current = url;
         setSilhouetteUrl(url);
         setMatrizGenerated(true);
+      } catch (error: unknown) {
+        if (jobId !== silhouetteJobRef.current || isAbortError(error)) return;
+        setBgError(getErrorMessage(error, 'Nao foi possivel gerar a silhueta SVG.'));
       } finally {
         if (jobId === silhouetteJobRef.current) {
           setSilhouetteLoading(false);
         }
       }
     }, 0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [processedImg, offsetX, offsetY, zoom, rotation, selectedProduct, canvasSize]);
+  }, [getFinalCanvas]);
 
   const handleGerarMatriz = () => {
     applySilhouette();
@@ -416,13 +520,13 @@ export default function ModuleProducao() {
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 1.05 }}
-      className="flex-1 flex overflow-hidden"
+      className="flex-1 flex flex-col md:flex-row overflow-auto md:overflow-hidden"
     >
       {/* ════════════════ ETAPA 1 ════════════════ */}
       {etapa === 1 && (
         <>
           {/* Left: controles */}
-          <div className="w-80 border-r border-white/5 bg-[#111111] p-6 flex flex-col gap-6 overflow-y-auto">
+          <div className="w-full md:w-80 border-b md:border-b-0 md:border-r border-white/5 bg-[#111111] p-4 md:p-6 flex flex-col gap-6 overflow-y-auto shrink-0">
             <div className="flex items-center gap-2 text-zinc-400 font-bold text-xs uppercase tracking-widest">
               <Settings2 size={16} /> <Layout size={16} /> Produção
             </div>
@@ -492,7 +596,7 @@ export default function ModuleProducao() {
                       <AlertCircle size={14} /> {bgError}
                     </div>
                     <button
-                      onClick={() => file && triggerBgRemoval(file)}
+                      onClick={() => file && void triggerBgRemoval(file)}
                       className="w-full bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold py-2 rounded-lg flex items-center justify-center gap-2 border border-white/10"
                     >
                       <RefreshCcw size={14} /> Tentar novamente
@@ -510,7 +614,7 @@ export default function ModuleProducao() {
                       <label className="text-xs font-medium text-zinc-500">Produto</label>
                       <select
                         value={selectedProduct.id}
-                        onChange={e => setSelectedProduct(PRODUCTS.find(p => p.id === e.target.value)!)}
+                        onChange={e => setSelectedProduct(PRODUCTS.find(p => p.id === e.target.value) ?? PRODUCTS[1])}
                         className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none"
                       >
                         {PRODUCTS.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -518,14 +622,14 @@ export default function ModuleProducao() {
                     </div>
 
                     <button
-                      onClick={aplicarImagem}
+                      onClick={() => void aplicarImagem()}
                       className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-500/10"
                     >
                       <ArrowRight size={18} /> Aplicar no Produto
                     </button>
 
                     <button
-                      onClick={() => file && triggerBgRemoval(file)}
+                      onClick={() => file && void triggerBgRemoval(file)}
                       className="w-full bg-white/5 hover:bg-white/10 text-zinc-400 text-xs font-medium py-2 rounded-lg flex items-center justify-center gap-2 border border-white/10"
                     >
                       <RefreshCcw size={13} /> Tentar novamente
@@ -537,9 +641,9 @@ export default function ModuleProducao() {
           </div>
 
           {/* Right: before / after */}
-          <div ref={containerRef} className="flex-1 bg-black p-4 grid grid-cols-2 gap-4 overflow-hidden">
+          <div ref={containerRef} className="flex-1 bg-black p-4 grid grid-cols-1 md:grid-cols-2 gap-4 overflow-auto md:overflow-hidden">
             {/* Original */}
-            <div className="relative border border-white/5 rounded-2xl bg-zinc-900 overflow-hidden flex items-center justify-center">
+            <div className="relative min-h-[280px] md:min-h-0 border border-white/5 rounded-2xl bg-zinc-900 overflow-hidden flex items-center justify-center">
               <div className="absolute top-3 left-3 z-10 bg-black/50 backdrop-blur-md px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider text-zinc-400 border border-white/10">
                 Original
               </div>
@@ -554,7 +658,7 @@ export default function ModuleProducao() {
             </div>
 
             {/* Resultado com fundo removido */}
-            <div className="relative border border-white/5 rounded-2xl bg-checkerboard overflow-hidden flex items-center justify-center">
+            <div className="relative min-h-[280px] md:min-h-0 border border-white/5 rounded-2xl bg-checkerboard overflow-hidden flex items-center justify-center">
               <div className="absolute top-3 left-3 z-10 flex items-center gap-2">
                 <div className="bg-black/50 backdrop-blur-md px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider text-zinc-400 border border-white/10">
                   Fundo Removido
@@ -591,13 +695,13 @@ export default function ModuleProducao() {
       {etapa === 2 && (
         <>
           {/* Left: controles */}
-          <div className="w-80 border-r border-white/5 bg-[#111111] p-6 flex flex-col gap-6 overflow-y-auto">
+          <div className="w-full md:w-80 border-b md:border-b-0 md:border-r border-white/5 bg-[#111111] p-4 md:p-6 flex flex-col gap-6 overflow-y-auto shrink-0">
             <div className="flex items-center gap-2 text-zinc-400 font-bold text-xs uppercase tracking-widest">
               <Settings2 size={16} /> <Layout size={16} /> Produção
             </div>
 
             <button
-              onClick={() => setEtapa(1)}
+              onClick={handleBackToStepOne}
               className="text-xs font-medium text-zinc-500 hover:text-zinc-300 flex items-center gap-1 self-start"
             >
               <ArrowLeft size={14} /> Voltar
@@ -607,7 +711,7 @@ export default function ModuleProducao() {
               <label className="text-xs font-medium text-zinc-500">Produto</label>
               <select
                 value={selectedProduct.id}
-                onChange={e => setSelectedProduct(PRODUCTS.find(p => p.id === e.target.value)!)}
+                onChange={e => setSelectedProduct(PRODUCTS.find(p => p.id === e.target.value) ?? PRODUCTS[1])}
                 className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none"
               >
                 {PRODUCTS.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -633,7 +737,7 @@ export default function ModuleProducao() {
               </div>
               <input
                 type="range" min="-180" max="180" value={rotation}
-                onChange={e => setRotation(parseInt(e.target.value))}
+                onChange={e => setRotation(parseInt(e.target.value, 10))}
                 className="w-full accent-zinc-500"
               />
 
@@ -689,7 +793,7 @@ export default function ModuleProducao() {
           {/* Right: canvas + silhueta */}
           <div
             ref={containerRef}
-            className="flex-1 bg-black relative flex items-center justify-center overflow-hidden"
+            className="flex-1 bg-black relative flex items-center justify-center overflow-auto md:overflow-hidden p-4"
           >
             <div className="absolute top-4 right-4 z-10">
               <div className="bg-black/50 backdrop-blur-md p-2 rounded-lg border border-white/10 text-[10px] text-zinc-500 uppercase tracking-widest font-bold">
@@ -697,7 +801,7 @@ export default function ModuleProducao() {
               </div>
             </div>
 
-            <div className="flex items-center justify-center gap-6">
+            <div className="flex flex-col lg:flex-row items-center justify-center gap-6 py-8">
               {/* Canvas do produto */}
               <div className="flex flex-col items-center gap-2">
                 <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
@@ -747,7 +851,7 @@ export default function ModuleProducao() {
               </div>
             )}
 
-            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-black/50 backdrop-blur-md px-4 py-2 rounded-full border border-white/10 flex items-center gap-4 text-xs text-zinc-400">
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-black/50 backdrop-blur-md px-4 py-2 rounded-full border border-white/10 hidden md:flex items-center gap-4 text-xs text-zinc-400">
               <div className="flex items-center gap-1">
                 <History size={14} /> Arraste para Pan
               </div>

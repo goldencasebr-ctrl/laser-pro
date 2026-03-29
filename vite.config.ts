@@ -13,7 +13,15 @@ export default defineConfig({
   server: {
     hmr: process.env.DISABLE_HMR !== 'true',
     proxy: {
-      '/api': 'http://localhost:8888/.netlify/functions',
+      '/api/upload-file': {
+        target: 'http://localhost:8888',
+        changeOrigin: true,
+      },
+      '/api': {
+        target: 'http://localhost:8888',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, '/.netlify/functions'),
+      },
     },
   },
 });

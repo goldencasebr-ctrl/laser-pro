@@ -1,3 +1,11 @@
+function normalizePredictionOutput(output) {
+  if (typeof output === 'string') return output;
+  if (Array.isArray(output)) {
+    return output.find((value) => typeof value === 'string') ?? null;
+  }
+  return null;
+}
+
 exports.handler = async (event) => {
   const id = event.queryStringParameters && event.queryStringParameters.id;
 
@@ -31,7 +39,7 @@ exports.handler = async (event) => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       status: prediction.status,
-      output: prediction.output,
+      output: normalizePredictionOutput(prediction.output),
       error: prediction.error,
     }),
   };

@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Scissors,
   Upload,
@@ -21,76 +21,117 @@ const LOADING_STEPS = [
   'Finalizando...',
 ];
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
 export default function ModuleRemover() {
-  const [file, setFile]             = useState<File | null>(null);
+  const [file, setFile] = useState<File | null>(null);
   const [originalUrl, setOriginalUrl] = useState<string | null>(null);
-  const [resultUrl, setResultUrl]   = useState<string | null>(null);
-  const [loading, setLoading]       = useState(false);
+  const [resultUrl, setResultUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
-  const [zoom, setZoom]             = useState(1);
-  const [panX, setPanX]             = useState(0);
-  const [panY, setPanY]             = useState(0);
-  const [isPanning, setIsPanning]   = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [panX, setPanX] = useState(0);
+  const [panY, setPanY] = useState(0);
+  const [isPanning, setIsPanning] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [error, setError]           = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const objectUrlRef  = useRef<string | null>(null);
-  const inputRef      = useRef<HTMLInputElement>(null);
-  const stepTimerRef  = useRef<ReturnType<typeof setInterval> | null>(null);
-  const isPanningRef  = useRef(false);
-  const lastPanPos    = useRef({ x: 0, y: 0 });
+  const objectUrlRef = useRef<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const stepTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isPanningRef = useRef(false);
+  const lastPanPos = useRef({ x: 0, y: 0 });
+  const requestIdRef = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  const resetView = () => { setZoom(1); setPanX(0); setPanY(0); };
+  const resetView = () => {
+    setZoom(1);
+    setPanX(0);
+    setPanY(0);
+  };
 
-  const setNewFile = (f: File) => {
+  const clearLoadingTimer = () => {
+    if (stepTimerRef.current) {
+      clearInterval(stepTimerRef.current);
+      stepTimerRef.current = null;
+    }
+  };
+
+  const cancelActiveRequest = () => {
+    requestIdRef.current += 1;
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    clearLoadingTimer();
+    setLoading(false);
+    setLoadingStep(0);
+  };
+
+  const setNewFile = (nextFile: File) => {
+    cancelActiveRequest();
     if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
-    const url = URL.createObjectURL(f);
+    const url = URL.createObjectURL(nextFile);
     objectUrlRef.current = url;
-    setFile(f);
+    setFile(nextFile);
     setOriginalUrl(url);
     setResultUrl(null);
     setError(null);
     resetView();
   };
 
-  React.useEffect(() => {
-    return () => {
-      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
-      if (stepTimerRef.current) clearInterval(stepTimerRef.current);
-    };
+  React.useEffect(() => () => {
+    cancelActiveRequest();
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
   }, []);
 
-  // Reset pan when zoom returns to 1
   React.useEffect(() => {
-    if (zoom <= 1) { setPanX(0); setPanY(0); }
+    if (zoom <= 1) {
+      setPanX(0);
+      setPanY(0);
+    }
   }, [zoom]);
 
-  // ── Upload handlers ────────────────────────────────────────────────────────
-
-  const handleFileAccepted = (f: File) => {
-    const validationError = validateImageFile(f);
-    if (validationError) { setError(validationError); return; }
-    setNewFile(f);
+  const handleFileAccepted = (nextFile: File) => {
+    const validationError = validateImageFile(nextFile);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    setNewFile(nextFile);
   };
 
   const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) handleFileAccepted(f);
+    const nextFile = e.target.files?.[0];
+    if (nextFile) handleFileAccepted(nextFile);
   };
 
-  const handleDragOver  = (e: React.DragEvent) => e.preventDefault();
-  const handleDragEnter = (e: React.DragEvent) => { e.preventDefault(); setIsDragOver(true); };
-  const handleDragLeave = (e: React.DragEvent) => { e.preventDefault(); setIsDragOver(false); };
+  const handleDragOver = (e: React.DragEvent) => e.preventDefault();
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+  };
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(false);
-    const f = e.dataTransfer.files[0];
-    if (f) handleFileAccepted(f);
+    const nextFile = e.dataTransfer.files[0];
+    if (nextFile) handleFileAccepted(nextFile);
   };
 
   const handleReset = () => {
-    if (objectUrlRef.current) { URL.revokeObjectURL(objectUrlRef.current); objectUrlRef.current = null; }
-    if (stepTimerRef.current) { clearInterval(stepTimerRef.current); stepTimerRef.current = null; }
+    cancelActiveRequest();
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
     setFile(null);
     setOriginalUrl(null);
     setResultUrl(null);
@@ -98,8 +139,6 @@ export default function ModuleRemover() {
     resetView();
     if (inputRef.current) inputRef.current.value = '';
   };
-
-  // ── Pan handlers ───────────────────────────────────────────────────────────
 
   const handlePanStart = (e: React.MouseEvent) => {
     if (zoom <= 1) return;
@@ -112,8 +151,8 @@ export default function ModuleRemover() {
     if (!isPanningRef.current) return;
     const dx = e.clientX - lastPanPos.current.x;
     const dy = e.clientY - lastPanPos.current.y;
-    setPanX(px => px + dx);
-    setPanY(py => py + dy);
+    setPanX((currentPanX) => currentPanX + dx);
+    setPanY((currentPanY) => currentPanY + dy);
     lastPanPos.current = { x: e.clientX, y: e.clientY };
   };
 
@@ -122,29 +161,41 @@ export default function ModuleRemover() {
     setIsPanning(false);
   };
 
-  // ── Processing ─────────────────────────────────────────────────────────────
-
   const processImage = async () => {
     if (!file) return;
+
+    requestIdRef.current += 1;
+    const requestId = requestIdRef.current;
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setLoading(true);
     setLoadingStep(0);
     setResultUrl(null);
     setError(null);
 
     let step = 0;
+    clearLoadingTimer();
     stepTimerRef.current = setInterval(() => {
       step = Math.min(step + 1, LOADING_STEPS.length - 1);
       setLoadingStep(step);
     }, 2_000);
 
     try {
-      const outputUrl = await removeBackgroundAPI(file);
+      const outputUrl = await removeBackgroundAPI(file, { signal: controller.signal });
+      if (requestId !== requestIdRef.current) return;
       setResultUrl(outputUrl);
-    } catch (err: any) {
-      setError(err.message ?? 'Erro ao processar imagem. Tente novamente.');
+    } catch (caughtError) {
+      if (requestId !== requestIdRef.current || isAbortError(caughtError)) return;
+      setError(getErrorMessage(caughtError, 'Erro ao processar imagem. Tente novamente.'));
     } finally {
-      if (stepTimerRef.current) { clearInterval(stepTimerRef.current); stepTimerRef.current = null; }
+      if (requestId !== requestIdRef.current) return;
+      clearLoadingTimer();
       setLoading(false);
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
     }
   };
 
@@ -168,8 +219,6 @@ export default function ModuleRemover() {
     }
   };
 
-  // ── Shared image transform ─────────────────────────────────────────────────
-
   const imgTransform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
   const panCursor = zoom > 1 ? (isPanning ? 'grabbing' : 'grab') : 'default';
 
@@ -178,7 +227,7 @@ export default function ModuleRemover() {
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -10 }}
-      className="flex-1 flex flex-col p-6 overflow-hidden"
+      className="flex-1 flex flex-col p-4 md:p-6 overflow-auto md:overflow-hidden"
     >
       <header className="mb-6">
         <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2">
@@ -189,7 +238,6 @@ export default function ModuleRemover() {
 
       <div className="flex-1 flex flex-col gap-6 overflow-hidden">
         {!originalUrl ? (
-          /* ── Upload zone ── */
           <div
             onDragOver={handleDragOver}
             onDragEnter={handleDragEnter}
@@ -222,10 +270,9 @@ export default function ModuleRemover() {
             )}
           </div>
         ) : (
-          <div className="flex-1 flex flex-col gap-4 overflow-hidden">
-            {/* ── Toolbar ── */}
-            <div className="flex items-center justify-between bg-[#1a1a1a] p-3 rounded-xl border border-white/5">
-              <div className="flex items-center gap-4">
+          <div className="flex-1 flex flex-col gap-4 overflow-auto md:overflow-hidden">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 bg-[#1a1a1a] p-3 rounded-xl border border-white/5">
+              <div className="flex flex-wrap items-center gap-4">
                 <button
                   onClick={handleReset}
                   className="text-xs font-medium text-zinc-500 hover:text-zinc-300 flex items-center gap-1"
@@ -234,7 +281,10 @@ export default function ModuleRemover() {
                 </button>
                 <div className="h-4 w-px bg-white/10" />
                 <div className="flex items-center gap-2">
-                  <button onClick={() => setZoom(z => Math.max(0.5, z - 0.25))} className="p-1 hover:bg-white/5 rounded">
+                  <button
+                    onClick={() => setZoom((currentZoom) => Math.max(0.5, currentZoom - 0.25))}
+                    className="p-1 hover:bg-white/5 rounded"
+                  >
                     <ZoomOut size={16} />
                   </button>
                   <button
@@ -244,12 +294,15 @@ export default function ModuleRemover() {
                   >
                     {Math.round(zoom * 100)}%
                   </button>
-                  <button onClick={() => setZoom(z => Math.min(4, z + 0.25))} className="p-1 hover:bg-white/5 rounded">
+                  <button
+                    onClick={() => setZoom((currentZoom) => Math.min(4, currentZoom + 0.25))}
+                    className="p-1 hover:bg-white/5 rounded"
+                  >
                     <ZoomIn size={16} />
                   </button>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {resultUrl && (
                   <button
                     onClick={processImage}
@@ -285,11 +338,9 @@ export default function ModuleRemover() {
               </div>
             )}
 
-            {/* ── Before / After ── */}
-            <div className="flex-1 grid grid-cols-2 gap-4 overflow-hidden">
-              {/* Original */}
+            <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4 overflow-auto md:overflow-hidden">
               <div
-                className="relative border border-white/5 rounded-2xl bg-black overflow-hidden flex items-center justify-center"
+                className="relative min-h-[280px] md:min-h-0 border border-white/5 rounded-2xl bg-black overflow-hidden flex items-center justify-center"
                 style={{ cursor: panCursor }}
                 onMouseDown={handlePanStart}
                 onMouseMove={handlePanMove}
@@ -304,9 +355,8 @@ export default function ModuleRemover() {
                 </div>
               </div>
 
-              {/* Result */}
               <div
-                className="relative border border-white/5 rounded-2xl overflow-hidden flex items-center justify-center bg-checkerboard"
+                className="relative min-h-[280px] md:min-h-0 border border-white/5 rounded-2xl overflow-hidden flex items-center justify-center bg-checkerboard"
                 style={{ cursor: panCursor }}
                 onMouseDown={handlePanStart}
                 onMouseMove={handlePanMove}
