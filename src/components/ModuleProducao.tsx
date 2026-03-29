@@ -260,8 +260,8 @@ export default function ModuleProducao() {
     const W = canvasSize, H = canvasSize;
     ctx.clearRect(0, 0, W, H);
 
-    const previewRadius = W * 0.30;
-    const previewRectW  = W * 0.375;
+    const previewRadius = W * 0.44;
+    const previewRectW  = W * 0.55;
     const previewRectH  = previewRectW * (35 / 21);
     const baseScale = Math.min(W / processedImg.width, H / processedImg.height) * 0.8;
 
@@ -317,8 +317,8 @@ export default function ModuleProducao() {
     const ctx = outCanvas.getContext('2d');
     if (!ctx) return null;
 
-    const previewRadius = canvasSize * 0.30;
-    const previewRectW  = canvasSize * 0.375;
+    const previewRadius = canvasSize * 0.44;
+    const previewRectW  = canvasSize * 0.55;
     const outScale  = outW / (selectedProduct.type === 'round' ? previewRadius * 2 : previewRectW);
     const baseScale = Math.min(canvasSize / processedImg.width, canvasSize / processedImg.height) * 0.8;
 
