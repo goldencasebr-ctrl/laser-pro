@@ -36,7 +36,7 @@ const PRODUCTS: Product[] = [
 ];
 
 // ── Pure helper: raster canvas → SVG silhouette string ──────────────────────
-function buildSilhouetteSvg(canvas: HTMLCanvasElement, product: Product): string {
+function buildSilhouetteSvg(canvas: HTMLCanvasElement): string {
   const ctx  = canvas.getContext('2d')!;
   const outW = canvas.width;
   const outH = canvas.height;
@@ -53,15 +53,18 @@ function buildSilhouetteSvg(canvas: HTMLCanvasElement, product: Product): string
 
   // @ts-ignore
   const tracer = ImageTracer.default || ImageTracer;
-  const svgStr = tracer.imagedataToSVG(outData, {
+  return tracer.imagedataToSVG(outData, {
     colorsampling: 0, numberofcolors: 2, strokewidth: 0, pathomit: 8,
-  });
+  }) as string;
+}
 
-  const sizeStr = Array.isArray(product.size)
-    ? `width="${product.size[0]}mm" height="${product.size[1]}mm"`
-    : `width="${product.size}mm" height="${product.size}mm"`;
-
-  return svgStr.replace('<svg ', `<svg ${sizeStr} `);
+// Inject physical mm dimensions into SVG string for print-ready download
+function injectMmDimensions(svgStr: string, product: Product): string {
+  const w = Array.isArray(product.size) ? product.size[0] : product.size;
+  const h = Array.isArray(product.size) ? product.size[1] : product.size;
+  return svgStr
+    .replace(/width="[^"]*"/, `width="${w}mm"`)
+    .replace(/height="[^"]*"/, `height="${h}mm"`);
 }
 
 export default function ModuleProducao() {
@@ -86,6 +89,7 @@ export default function ModuleProducao() {
   const toleranceTimer      = useRef<ReturnType<typeof setTimeout> | null>(null);
   const silhouetteTimer     = useRef<ReturnType<typeof setTimeout> | null>(null);
   const svgUrlRef           = useRef<string | null>(null);
+  const svgStrRef           = useRef<string | null>(null);
   const matrizGeneratedRef  = useRef(false);
 
   const {
@@ -304,7 +308,8 @@ export default function ModuleProducao() {
     // Yield to browser before the heavy tracer call so loading state renders
     setTimeout(() => {
       try {
-        const svgStr = buildSilhouetteSvg(canvas, selectedProduct);
+        const svgStr = buildSilhouetteSvg(canvas);
+        svgStrRef.current = svgStr; // store raw for download
         if (svgUrlRef.current) URL.revokeObjectURL(svgUrlRef.current);
         const blob = new Blob([svgStr], { type: 'image/svg+xml' });
         const url  = URL.createObjectURL(blob);
@@ -357,11 +362,16 @@ export default function ModuleProducao() {
   };
 
   const downloadSVG = () => {
-    if (!svgUrlRef.current) return;
+    if (!svgStrRef.current) return;
+    // Inject physical mm dimensions for print-ready SVG
+    const printSvg = injectMmDimensions(svgStrRef.current, selectedProduct);
+    const blob = new Blob([printSvg], { type: 'image/svg+xml' });
+    const url  = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.href     = svgUrlRef.current;
+    link.href     = url;
     link.download = `silhueta_${selectedProduct.name}.svg`;
     link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 100);
   };
 
   const handleReset = () => {
@@ -372,6 +382,7 @@ export default function ModuleProducao() {
     setMatrizGenerated(false);
     setSilhouetteUrl(null);
     if (svgUrlRef.current) { URL.revokeObjectURL(svgUrlRef.current); svgUrlRef.current = null; }
+    svgStrRef.current = null;
     resetTransform();
     if (inputRef.current) inputRef.current.value = '';
   };
