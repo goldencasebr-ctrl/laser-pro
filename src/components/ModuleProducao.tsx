@@ -11,6 +11,7 @@ import {
   History,
   FileCode,
   Settings2,
+  Layers,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 // @ts-ignore
@@ -34,6 +35,35 @@ const PRODUCTS: Product[] = [
   { id: 'rect2135', name: 'Retangular 21x35mm', type: 'rect',  size: [21, 35] },
 ];
 
+// ── Pure helper: raster canvas → SVG silhouette string ──────────────────────
+function buildSilhouetteSvg(canvas: HTMLCanvasElement, product: Product): string {
+  const ctx  = canvas.getContext('2d')!;
+  const outW = canvas.width;
+  const outH = canvas.height;
+  const outData = ctx.getImageData(0, 0, outW, outH);
+  const d = outData.data;
+
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] > 10) {
+      d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 255;
+    } else {
+      d[i] = 255; d[i + 1] = 255; d[i + 2] = 255; d[i + 3] = 255;
+    }
+  }
+
+  // @ts-ignore
+  const tracer = ImageTracer.default || ImageTracer;
+  const svgStr = tracer.imagedataToSVG(outData, {
+    colorsampling: 0, numberofcolors: 2, strokewidth: 0, pathomit: 8,
+  });
+
+  const sizeStr = Array.isArray(product.size)
+    ? `width="${product.size[0]}mm" height="${product.size[1]}mm"`
+    : `width="${product.size}mm" height="${product.size}mm"`;
+
+  return svgStr.replace('<svg ', `<svg ${sizeStr} `);
+}
+
 export default function ModuleProducao() {
   const [file, setFile]                       = useState<File | null>(null);
   const [img, setImg]                         = useState<HTMLImageElement | null>(null);
@@ -45,10 +75,18 @@ export default function ModuleProducao() {
   const [isDragOver, setIsDragOver]           = useState(false);
   const [canvasSize, setCanvasSize]           = useState(400);
 
-  const canvasRef      = useRef<HTMLCanvasElement>(null);
-  const containerRef   = useRef<HTMLDivElement>(null);
-  const inputRef       = useRef<HTMLInputElement>(null);
-  const toleranceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // ── Matriz / silhouette state ────────────────────────────────────────────
+  const [matrizGenerated, setMatrizGenerated] = useState(false);
+  const [silhouetteUrl, setSilhouetteUrl]     = useState<string | null>(null);
+  const [silhouetteLoading, setSilhouetteLoading] = useState(false);
+
+  const canvasRef           = useRef<HTMLCanvasElement>(null);
+  const containerRef        = useRef<HTMLDivElement>(null);
+  const inputRef            = useRef<HTMLInputElement>(null);
+  const toleranceTimer      = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const silhouetteTimer     = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const svgUrlRef           = useRef<string | null>(null);
+  const matrizGeneratedRef  = useRef(false);
 
   const {
     offsetX, offsetY,
@@ -58,20 +96,36 @@ export default function ModuleProducao() {
     reset: resetTransform,
   } = useCanvasTransform();
 
+  // Keep ref in sync so ResizeObserver callback always reads current value
+  useEffect(() => {
+    matrizGeneratedRef.current = matrizGenerated;
+  }, [matrizGenerated]);
+
   // ── Responsive canvas via ResizeObserver ───────────────────────────────────
+  const recalcCanvasSize = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    // When showing two panels side by side, each panel gets roughly half the width
+    const columns  = matrizGeneratedRef.current ? 2 : 1;
+    const availW   = width / columns - (columns > 1 ? 32 : 0); // 32px gap
+    const size     = Math.max(Math.min(Math.floor(Math.min(availW, height) * 0.88), 900), 260);
+    setCanvasSize(size);
+  }, []);
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const update = () => {
-      const { width, height } = el.getBoundingClientRect();
-      const size = Math.max(Math.min(Math.floor(Math.min(width, height) * 0.88), 900), 320);
-      setCanvasSize(size);
-    };
-    const ro = new ResizeObserver(update);
+    const ro = new ResizeObserver(recalcCanvasSize);
     ro.observe(el);
-    update();
+    recalcCanvasSize();
     return () => ro.disconnect();
-  }, []);
+  }, [recalcCanvasSize]);
+
+  // Re-calc when layout changes between 1-column and 2-column
+  useEffect(() => {
+    recalcCanvasSize();
+  }, [matrizGenerated, recalcCanvasSize]);
 
   // ── Upload / drag-and-drop ─────────────────────────────────────────────────
   const handleFileAccepted = async (f: File) => {
@@ -80,6 +134,10 @@ export default function ModuleProducao() {
     setError(null);
     setFile(f);
     resetTransform();
+    // Clear previous silhouette when a new image is loaded
+    setMatrizGenerated(false);
+    setSilhouetteUrl(null);
+    if (svgUrlRef.current) { URL.revokeObjectURL(svgUrlRef.current); svgUrlRef.current = null; }
     const objectUrl = URL.createObjectURL(f);
     try {
       const loaded = await loadImage(objectUrl);
@@ -139,7 +197,6 @@ export default function ModuleProducao() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Apply device pixel ratio for sharp rendering on Retina / HiDPI screens
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width  = canvasSize * dpr;
     canvas.height = canvasSize * dpr;
@@ -151,14 +208,12 @@ export default function ModuleProducao() {
     const H = canvasSize;
     ctx.clearRect(0, 0, W, H);
 
-    // Product preview dimensions relative to canvas size
     const previewRadius = W * 0.30;
     const previewRectW  = W * 0.375;
     const previewRectH  = previewRectW * (35 / 21);
 
     const baseScale = Math.min(W / processedImg.width, H / processedImg.height) * 0.8;
 
-    // Clip to product shape
     ctx.save();
     ctx.beginPath();
     if (selectedProduct.type === 'round') {
@@ -177,7 +232,6 @@ export default function ModuleProducao() {
     ctx.restore();
     ctx.restore();
 
-    // Product outline
     ctx.save();
     ctx.strokeStyle = '#10b981';
     ctx.lineWidth   = 1.5;
@@ -224,7 +278,6 @@ export default function ModuleProducao() {
     ctx.drawImage(processedImg, -processedImg.width / 2, -processedImg.height / 2);
     ctx.restore();
 
-    // Clip mask
     const clipCanvas = document.createElement('canvas');
     clipCanvas.width  = outW;
     clipCanvas.height = outH;
@@ -242,6 +295,49 @@ export default function ModuleProducao() {
 
     return outCanvas;
   };
+
+  // ── Silhouette generation ──────────────────────────────────────────────────
+  const applySilhouette = useCallback(() => {
+    const canvas = getFinalCanvas();
+    if (!canvas) return;
+    setSilhouetteLoading(true);
+    // Yield to browser before the heavy tracer call so loading state renders
+    setTimeout(() => {
+      try {
+        const svgStr = buildSilhouetteSvg(canvas, selectedProduct);
+        if (svgUrlRef.current) URL.revokeObjectURL(svgUrlRef.current);
+        const blob = new Blob([svgStr], { type: 'image/svg+xml' });
+        const url  = URL.createObjectURL(blob);
+        svgUrlRef.current = url;
+        setSilhouetteUrl(url);
+      } finally {
+        setSilhouetteLoading(false);
+      }
+    }, 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [processedImg, offsetX, offsetY, zoom, rotation, selectedProduct, canvasSize]);
+
+  // Handle "Gerar Matriz" button
+  const handleGerarMatriz = () => {
+    setMatrizGenerated(true);
+    applySilhouette();
+  };
+
+  // Reactively regenerate silhouette (debounced) when transforms or tolerance change
+  useEffect(() => {
+    if (!matrizGenerated || !processedImg) return;
+    if (silhouetteTimer.current) clearTimeout(silhouetteTimer.current);
+    silhouetteTimer.current = setTimeout(() => {
+      applySilhouette();
+    }, 250);
+    return () => { if (silhouetteTimer.current) clearTimeout(silhouetteTimer.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offsetX, offsetY, zoom, rotation, selectedProduct, processedImg, canvasSize]);
+
+  // Cleanup blob URL on unmount
+  useEffect(() => {
+    return () => { if (svgUrlRef.current) URL.revokeObjectURL(svgUrlRef.current); };
+  }, []);
 
   // ── Downloads ──────────────────────────────────────────────────────────────
   const downloadPNG = () => {
@@ -261,48 +357,11 @@ export default function ModuleProducao() {
   };
 
   const downloadSVG = () => {
-    setLoading(true);
-    try {
-      const canvas = getFinalCanvas();
-      if (!canvas) return;
-
-      const ctx   = canvas.getContext('2d')!;
-      const outW  = canvas.width;
-      const outH  = canvas.height;
-      const outData = ctx.getImageData(0, 0, outW, outH);
-      const d     = outData.data;
-
-      for (let i = 0; i < d.length; i += 4) {
-        if (d[i + 3] > 10) {
-          d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 255;
-        } else {
-          d[i] = 255; d[i + 1] = 255; d[i + 2] = 255; d[i + 3] = 255;
-        }
-      }
-
-      // @ts-ignore
-      const tracer  = ImageTracer.default || ImageTracer;
-      const svgStr  = tracer.imagedataToSVG(outData, {
-        colorsampling: 0, numberofcolors: 2, strokewidth: 0, pathomit: 8,
-      });
-
-      const sizeStr = Array.isArray(selectedProduct.size)
-        ? `width="${selectedProduct.size[0]}mm" height="${selectedProduct.size[1]}mm"`
-        : `width="${selectedProduct.size}mm" height="${selectedProduct.size}mm"`;
-
-      const finalSvg = svgStr.replace('<svg ', `<svg ${sizeStr} `);
-      const blob     = new Blob([finalSvg], { type: 'image/svg+xml' });
-      const svgUrl   = URL.createObjectURL(blob);
-      const svgLink  = document.createElement('a');
-      svgLink.href     = svgUrl;
-      svgLink.download = `silhueta_${selectedProduct.name}.svg`;
-      svgLink.click();
-      setTimeout(() => URL.revokeObjectURL(svgUrl), 100);
-    } catch (err) {
-      console.error('Erro ao baixar SVG:', err);
-    } finally {
-      setLoading(false);
-    }
+    if (!svgUrlRef.current) return;
+    const link = document.createElement('a');
+    link.href     = svgUrlRef.current;
+    link.download = `silhueta_${selectedProduct.name}.svg`;
+    link.click();
   };
 
   const handleReset = () => {
@@ -310,6 +369,9 @@ export default function ModuleProducao() {
     setImg(null);
     setProcessedImg(null);
     setError(null);
+    setMatrizGenerated(false);
+    setSilhouetteUrl(null);
+    if (svgUrlRef.current) { URL.revokeObjectURL(svgUrlRef.current); svgUrlRef.current = null; }
     resetTransform();
     if (inputRef.current) inputRef.current.value = '';
   };
@@ -428,50 +490,102 @@ export default function ModuleProducao() {
               </div>
             </div>
 
-            <div className="space-y-3 mt-4">
-              <button
-                onClick={downloadPNG}
-                disabled={loading}
-                className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:bg-emerald-500/50 text-black font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-500/10"
-              >
-                {loading ? <Loader2 className="animate-spin" size={20} /> : <Download size={20} />}
-                Baixar PNG (Arte Recortada)
-              </button>
+            <div className="h-px bg-white/5" />
 
-              <button
-                onClick={downloadSVG}
-                disabled={loading}
-                className="w-full bg-zinc-800 hover:bg-zinc-700 disabled:bg-zinc-800/50 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-all border border-white/10"
-              >
-                {loading ? <Loader2 className="animate-spin" size={20} /> : <FileCode size={20} />}
-                Baixar SVG da Silhueta
-              </button>
-            </div>
+            {/* Gerar Matriz button — always visible once image is loaded */}
+            <button
+              onClick={handleGerarMatriz}
+              disabled={loading || silhouetteLoading}
+              className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-600/50 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-500/10"
+            >
+              {silhouetteLoading
+                ? <Loader2 className="animate-spin" size={20} />
+                : <Layers size={20} />
+              }
+              Gerar Matriz
+            </button>
+
+            {/* Download buttons — only visible after "Gerar Matriz" */}
+            {matrizGenerated && (
+              <div className="space-y-3">
+                <button
+                  onClick={downloadPNG}
+                  disabled={loading || silhouetteLoading}
+                  className="w-full bg-zinc-800 hover:bg-zinc-700 disabled:bg-zinc-800/50 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-all border border-white/10"
+                >
+                  {loading ? <Loader2 className="animate-spin" size={20} /> : <Download size={20} />}
+                  Baixar PNG
+                </button>
+
+                <button
+                  onClick={downloadSVG}
+                  disabled={loading || silhouetteLoading || !silhouetteUrl}
+                  className="w-full bg-zinc-800 hover:bg-zinc-700 disabled:bg-zinc-800/50 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-all border border-white/10"
+                >
+                  {loading ? <Loader2 className="animate-spin" size={20} /> : <FileCode size={20} />}
+                  Baixar SVG
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
 
-      {/* ── Center: Canvas ── */}
+      {/* ── Center: Canvas(es) ── */}
       <div
         ref={containerRef}
         className="flex-1 bg-black relative flex items-center justify-center overflow-hidden"
       >
+        {/* Top label */}
         <div className="absolute top-4 right-4 z-10">
           <div className="bg-black/50 backdrop-blur-md p-2 rounded-lg border border-white/10 text-[10px] text-zinc-500 uppercase tracking-widest font-bold">
             Preview Interativo
           </div>
         </div>
 
-        <canvas
-          ref={canvasRef}
-          style={{ width: canvasSize, height: canvasSize, cursor: 'move' }}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
-          onWheel={handleWheel}
-          className="shadow-2xl rounded-lg border border-white/5 bg-zinc-900"
-        />
+        <div className={`flex items-center justify-center ${matrizGenerated ? 'gap-6' : ''}`}>
+          {/* Product preview canvas */}
+          <div className="flex flex-col items-center gap-2">
+            {matrizGenerated && (
+              <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                Imagem no Produto
+              </span>
+            )}
+            <canvas
+              ref={canvasRef}
+              style={{ width: canvasSize, height: canvasSize, cursor: 'move' }}
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseUp}
+              onWheel={handleWheel}
+              className="shadow-2xl rounded-lg border border-white/5 bg-zinc-900"
+            />
+          </div>
+
+          {/* Silhouette SVG preview */}
+          {matrizGenerated && (
+            <div className="flex flex-col items-center gap-2">
+              <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                Silhueta SVG
+              </span>
+              <div
+                style={{ width: canvasSize, height: canvasSize }}
+                className="shadow-2xl rounded-lg border border-white/5 bg-white flex items-center justify-center overflow-hidden relative"
+              >
+                {silhouetteLoading ? (
+                  <Loader2 className="animate-spin text-zinc-400" size={32} />
+                ) : silhouetteUrl ? (
+                  <img
+                    src={silhouetteUrl}
+                    alt="Silhueta SVG"
+                    style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                  />
+                ) : null}
+              </div>
+            </div>
+          )}
+        </div>
 
         {loading && (
           <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
