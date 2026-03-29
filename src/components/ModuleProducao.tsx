@@ -31,6 +31,8 @@ interface Product {
   size: number | [number, number];
 }
 
+type InputMode = 'remove-bg' | 'transparent';
+
 const PRODUCTS: Product[] = [
   { id: 'r15',      name: 'Redondo 15mm',       type: 'round', size: 15 },
   { id: 'r20',      name: 'Redondo 20mm',       type: 'round', size: 20 },
@@ -114,6 +116,7 @@ export default function ModuleProducao() {
   const [bgStep, setBgStep]       = useState(0);
   const [bgError, setBgError]     = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [inputMode, setInputMode] = useState<InputMode>('remove-bg');
 
   // ── Etapa 2: posicionamento + silhueta ─────────────────────────────────────
   const [processedImg, setProcessedImg]       = useState<HTMLImageElement | null>(null);
@@ -191,6 +194,30 @@ export default function ModuleProducao() {
     svgStrRef.current = null;
   }, []);
 
+  const resetWorkflowState = useCallback(() => {
+    cancelBgRequest();
+    cancelApplyImageRequest();
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
+    if (processedImgUrlRef.current) {
+      URL.revokeObjectURL(processedImgUrlRef.current);
+      processedImgUrlRef.current = null;
+    }
+    clearSilhouette();
+    setFile(null);
+    setOriginalUrl(null);
+    setResultUrl(null);
+    setBgError(null);
+    setBgLoading(false);
+    setBgStep(0);
+    setProcessedImg(null);
+    setEtapa(1);
+    resetTransform();
+    if (inputRef.current) inputRef.current.value = '';
+  }, [cancelApplyImageRequest, cancelBgRequest, clearSilhouette, resetTransform]);
+
   // ── Responsive canvas (Etapa 2) ────────────────────────────────────────────
   const recalcCanvasSize = useCallback(() => {
     const el = containerRef.current;
@@ -214,7 +241,7 @@ export default function ModuleProducao() {
   useEffect(() => { recalcCanvasSize(); }, [matrizGenerated, etapa, recalcCanvasSize]);
 
   // ── Etapa 1: Upload + remoção automática ───────────────────────────────────
-  const handleFileAccepted = async (f: File) => {
+  const handleFileAccepted = useCallback(async (f: File) => {
     const validationError = validateImageFile(f);
     if (validationError) { setBgError(validationError); return; }
 
@@ -234,9 +261,16 @@ export default function ModuleProducao() {
     clearSilhouette();
     resetTransform();
 
+    if (inputMode === 'transparent') {
+      setResultUrl(url);
+      setBgLoading(false);
+      setBgStep(0);
+      return;
+    }
+
     // Auto-disparar remoção de fundo
     await triggerBgRemoval(f);
-  };
+  }, [cancelApplyImageRequest, cancelBgRequest, clearSilhouette, inputMode, resetTransform]);
 
   const triggerBgRemoval = async (f: File) => {
     bgRequestIdRef.current += 1;
@@ -287,17 +321,13 @@ export default function ModuleProducao() {
   };
 
   const handleReset = () => {
-    cancelBgRequest();
-    cancelApplyImageRequest();
-    if (objectUrlRef.current)       { URL.revokeObjectURL(objectUrlRef.current);       objectUrlRef.current = null; }
-    if (processedImgUrlRef.current) { URL.revokeObjectURL(processedImgUrlRef.current); processedImgUrlRef.current = null; }
-    clearSilhouette();
-    setFile(null); setOriginalUrl(null); setResultUrl(null);
-    setBgError(null); setBgLoading(false);
-    setProcessedImg(null);
-    setEtapa(1);
-    resetTransform();
-    if (inputRef.current) inputRef.current.value = '';
+    resetWorkflowState();
+  };
+
+  const handleInputModeChange = (mode: InputMode) => {
+    if (mode === inputMode) return;
+    resetWorkflowState();
+    setInputMode(mode);
   };
 
   // ── Etapa 1 → 2: aplicar imagem no produto ────────────────────────────────
@@ -531,6 +561,37 @@ export default function ModuleProducao() {
               <Settings2 size={16} /> <Layout size={16} /> Produção
             </div>
 
+            <div className="space-y-3">
+              <label className="text-xs font-medium text-zinc-500">Modo de entrada</label>
+              <div className="grid grid-cols-2 gap-2 rounded-xl bg-black/30 p-1 border border-white/5">
+                <button
+                  onClick={() => handleInputModeChange('remove-bg')}
+                  className={`rounded-lg px-3 py-2 text-xs font-bold transition-colors border ${
+                    inputMode === 'remove-bg'
+                      ? 'bg-emerald-600 text-white border-emerald-500/60'
+                      : 'bg-transparent text-zinc-400 border-transparent hover:bg-white/5'
+                  }`}
+                >
+                  Remover Fundo
+                </button>
+                <button
+                  onClick={() => handleInputModeChange('transparent')}
+                  className={`rounded-lg px-3 py-2 text-xs font-bold transition-colors border ${
+                    inputMode === 'transparent'
+                      ? 'bg-emerald-600 text-white border-emerald-500/60'
+                      : 'bg-transparent text-zinc-400 border-transparent hover:bg-white/5'
+                  }`}
+                >
+                  Ja sem fundo
+                </button>
+              </div>
+              <p className="text-[10px] text-zinc-600">
+                {inputMode === 'remove-bg'
+                  ? 'Envie a imagem normal para remover o fundo com IA antes de montar a matriz.'
+                  : 'Envie PNG ou WEBP transparente para pular o Replicate e ir direto para a matriz.'}
+              </p>
+            </div>
+
             {!file ? (
               /* Upload zone */
               <div
@@ -553,9 +614,17 @@ export default function ModuleProducao() {
                 />
                 <Upload className={`mb-2 transition-colors ${isDragOver ? 'text-emerald-400' : 'text-zinc-600'}`} />
                 <p className="text-xs font-medium text-zinc-400">
-                  {isDragOver ? 'Solte a imagem aqui' : 'Carregar Imagem'}
+                  {isDragOver
+                    ? 'Solte a imagem aqui'
+                    : inputMode === 'remove-bg'
+                      ? 'Carregar imagem para remover o fundo'
+                      : 'Carregar imagem ja sem fundo'}
                 </p>
-                <p className="text-[10px] text-zinc-600 mt-1">PNG, JPG ou WEBP · Máx. 10 MB</p>
+                <p className="text-[10px] text-zinc-600 mt-1">
+                  {inputMode === 'remove-bg'
+                    ? 'PNG, JPG ou WEBP · Max. 10 MB'
+                    : 'Preferencialmente PNG ou WEBP com transparencia · Max. 10 MB'}
+                </p>
                 {bgError && (
                   <div className="mt-3 flex items-center gap-2 text-red-400 text-xs">
                     <AlertCircle size={14} /> {bgError}
@@ -572,7 +641,7 @@ export default function ModuleProducao() {
                 </button>
 
                 {/* Status da remoção de fundo */}
-                {bgLoading && (
+                {inputMode === 'remove-bg' && bgLoading && (
                   <div className="space-y-3">
                     <div className="flex items-center gap-2 text-emerald-400 text-sm font-medium">
                       <Loader2 className="animate-spin" size={16} />
@@ -590,7 +659,7 @@ export default function ModuleProducao() {
                   </div>
                 )}
 
-                {bgError && (
+                {inputMode === 'remove-bg' && bgError && (
                   <div className="space-y-3">
                     <div className="flex items-center gap-2 text-red-400 text-xs bg-red-500/10 border border-red-500/20 rounded-lg p-3">
                       <AlertCircle size={14} /> {bgError}
@@ -607,7 +676,10 @@ export default function ModuleProducao() {
                 {resultUrl && !bgLoading && (
                   <div className="space-y-3">
                     <div className="flex items-center gap-2 text-emerald-400 text-xs font-medium">
-                      <Sparkles size={14} /> Fundo removido com sucesso
+                      <Sparkles size={14} />
+                      {inputMode === 'remove-bg'
+                        ? 'Fundo removido com sucesso'
+                        : 'Imagem transparente pronta para a matriz'}
                     </div>
 
                     <div className="space-y-2">
@@ -628,12 +700,14 @@ export default function ModuleProducao() {
                       <ArrowRight size={18} /> Aplicar no Produto
                     </button>
 
-                    <button
-                      onClick={() => file && void triggerBgRemoval(file)}
-                      className="w-full bg-white/5 hover:bg-white/10 text-zinc-400 text-xs font-medium py-2 rounded-lg flex items-center justify-center gap-2 border border-white/10"
-                    >
-                      <RefreshCcw size={13} /> Tentar novamente
-                    </button>
+                    {inputMode === 'remove-bg' && (
+                      <button
+                        onClick={() => file && void triggerBgRemoval(file)}
+                        className="w-full bg-white/5 hover:bg-white/10 text-zinc-400 text-xs font-medium py-2 rounded-lg flex items-center justify-center gap-2 border border-white/10"
+                      >
+                        <RefreshCcw size={13} /> Tentar novamente
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -657,13 +731,13 @@ export default function ModuleProducao() {
               )}
             </div>
 
-            {/* Resultado com fundo removido */}
+            {/* Resultado pronto para producao */}
             <div className="relative min-h-[280px] md:min-h-0 border border-white/5 rounded-2xl bg-checkerboard overflow-hidden flex items-center justify-center">
               <div className="absolute top-3 left-3 z-10 flex items-center gap-2">
                 <div className="bg-black/50 backdrop-blur-md px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider text-zinc-400 border border-white/10">
-                  Fundo Removido
+                  {inputMode === 'remove-bg' ? 'Fundo Removido' : 'Imagem Transparente'}
                 </div>
-                {resultUrl && !bgLoading && (
+                {inputMode === 'remove-bg' && resultUrl && !bgLoading && (
                   <div className="bg-emerald-500/20 backdrop-blur-md px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider text-emerald-400 border border-emerald-500/30">
                     ✦ BIRefNet AI
                   </div>
@@ -683,7 +757,9 @@ export default function ModuleProducao() {
               {!resultUrl && !bgLoading && (
                 <div className="flex flex-col items-center gap-2 text-zinc-700">
                   <Sparkles size={32} />
-                  <p className="text-xs">Aguardando processamento</p>
+                  <p className="text-xs">
+                    {inputMode === 'remove-bg' ? 'Aguardando processamento' : 'Aguardando imagem transparente'}
+                  </p>
                 </div>
               )}
             </div>
