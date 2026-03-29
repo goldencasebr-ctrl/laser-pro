@@ -3,8 +3,6 @@ import {
   Scissors,
   Upload,
   Download,
-  ZoomIn,
-  ZoomOut,
   RefreshCcw,
   Loader2,
   AlertCircle,
@@ -35,26 +33,14 @@ export default function ModuleRemover() {
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
-  const [zoom, setZoom] = useState(1);
-  const [panX, setPanX] = useState(0);
-  const [panY, setPanY] = useState(0);
-  const [isPanning, setIsPanning] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const objectUrlRef = useRef<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const stepTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const isPanningRef = useRef(false);
-  const lastPanPos = useRef({ x: 0, y: 0 });
   const requestIdRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
-
-  const resetView = () => {
-    setZoom(1);
-    setPanX(0);
-    setPanY(0);
-  };
 
   const clearLoadingTimer = () => {
     if (stepTimerRef.current) {
@@ -81,20 +67,12 @@ export default function ModuleRemover() {
     setOriginalUrl(url);
     setResultUrl(null);
     setError(null);
-    resetView();
   };
 
   React.useEffect(() => () => {
     cancelActiveRequest();
     if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
   }, []);
-
-  React.useEffect(() => {
-    if (zoom <= 1) {
-      setPanX(0);
-      setPanY(0);
-    }
-  }, [zoom]);
 
   const handleFileAccepted = (nextFile: File) => {
     const validationError = validateImageFile(nextFile);
@@ -136,29 +114,7 @@ export default function ModuleRemover() {
     setOriginalUrl(null);
     setResultUrl(null);
     setError(null);
-    resetView();
     if (inputRef.current) inputRef.current.value = '';
-  };
-
-  const handlePanStart = (e: React.MouseEvent) => {
-    if (zoom <= 1) return;
-    isPanningRef.current = true;
-    setIsPanning(true);
-    lastPanPos.current = { x: e.clientX, y: e.clientY };
-  };
-
-  const handlePanMove = (e: React.MouseEvent) => {
-    if (!isPanningRef.current) return;
-    const dx = e.clientX - lastPanPos.current.x;
-    const dy = e.clientY - lastPanPos.current.y;
-    setPanX((currentPanX) => currentPanX + dx);
-    setPanY((currentPanY) => currentPanY + dy);
-    lastPanPos.current = { x: e.clientX, y: e.clientY };
-  };
-
-  const handlePanEnd = () => {
-    isPanningRef.current = false;
-    setIsPanning(false);
   };
 
   const processImage = async () => {
@@ -219,31 +175,25 @@ export default function ModuleRemover() {
     }
   };
 
-  const imgTransform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
-  const panCursor = zoom > 1 ? (isPanning ? 'grabbing' : 'grab') : 'default';
-
   return (
     <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -10 }}
-      className="flex-1 flex flex-col p-4 md:p-6 overflow-auto md:overflow-hidden"
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 1.05 }}
+      className="flex-1 flex flex-col md:flex-row overflow-auto md:overflow-hidden"
     >
-      <header className="mb-6">
-        <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-          <Scissors size={22} className="text-emerald-400" /> Removedor Inteligente de Fundo
-        </h2>
-        <p className="text-zinc-500 text-sm">Isole objetos para gravação com precisão cirúrgica.</p>
-      </header>
+      <div className="w-full md:w-80 border-b md:border-b-0 md:border-r border-white/5 bg-[#111111] p-4 md:p-6 flex flex-col gap-6 overflow-y-auto shrink-0">
+        <div className="flex items-center gap-2 text-zinc-400 font-bold text-xs uppercase tracking-widest">
+          <Scissors size={16} /> Removedor de Fundo
+        </div>
 
-      <div className="flex-1 flex flex-col gap-6 overflow-hidden">
-        {!originalUrl ? (
+        {!file ? (
           <div
             onDragOver={handleDragOver}
             onDragEnter={handleDragEnter}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
-            className={`flex-1 border-2 border-dashed rounded-2xl flex flex-col items-center justify-center transition-colors group cursor-pointer relative
+            className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center text-center transition-colors cursor-pointer relative
               ${isDragOver
                 ? 'border-emerald-500/60 bg-emerald-500/5'
                 : 'border-white/10 bg-white/[0.02] hover:bg-white/[0.04]'
@@ -256,152 +206,130 @@ export default function ModuleRemover() {
               onChange={handleUpload}
               className="absolute inset-0 opacity-0 cursor-pointer"
             />
-            <div className={`p-4 rounded-full transition-transform ${isDragOver ? 'scale-110 bg-emerald-500/20 text-emerald-300' : 'bg-emerald-500/10 text-emerald-400 group-hover:scale-110'}`}>
-              <Upload size={32} />
-            </div>
-            <p className="mt-4 font-medium">
-              {isDragOver ? 'Solte a imagem aqui' : 'Arraste ou clique para upload'}
+            <Upload className={`mb-2 transition-colors ${isDragOver ? 'text-emerald-400' : 'text-zinc-600'}`} />
+            <p className="text-xs font-medium text-zinc-400">
+              {isDragOver ? 'Solte a imagem aqui' : 'Carregar imagem'}
             </p>
-            <p className="text-xs text-zinc-500 mt-1">PNG, JPG ou WEBP · Máx. 10 MB</p>
+            <p className="text-[10px] text-zinc-600 mt-1">PNG, JPG ou WEBP · Max. 10 MB</p>
             {error && (
-              <div className="mt-4 bg-red-500/10 border border-red-500/20 px-4 py-2 rounded-lg flex items-center gap-2 text-red-400 text-sm">
-                <AlertCircle size={16} /> {error}
+              <div className="mt-3 flex items-center gap-2 text-red-400 text-xs">
+                <AlertCircle size={14} /> {error}
               </div>
             )}
           </div>
         ) : (
-          <div className="flex-1 flex flex-col gap-4 overflow-auto md:overflow-hidden">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 bg-[#1a1a1a] p-3 rounded-xl border border-white/5">
-              <div className="flex flex-wrap items-center gap-4">
-                <button
-                  onClick={handleReset}
-                  className="text-xs font-medium text-zinc-500 hover:text-zinc-300 flex items-center gap-1"
-                >
-                  <RefreshCcw size={14} /> Novo Upload
-                </button>
-                <div className="h-4 w-px bg-white/10" />
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setZoom((currentZoom) => Math.max(0.5, currentZoom - 0.25))}
-                    className="p-1 hover:bg-white/5 rounded"
-                  >
-                    <ZoomOut size={16} />
-                  </button>
-                  <button
-                    onClick={resetView}
-                    className="text-xs font-mono w-12 text-center hover:text-emerald-400 transition-colors"
-                    title="Resetar zoom"
-                  >
-                    {Math.round(zoom * 100)}%
-                  </button>
-                  <button
-                    onClick={() => setZoom((currentZoom) => Math.min(4, currentZoom + 0.25))}
-                    className="p-1 hover:bg-white/5 rounded"
-                  >
-                    <ZoomIn size={16} />
-                  </button>
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                {resultUrl && (
-                  <button
-                    onClick={processImage}
-                    disabled={loading}
-                    className="text-xs font-medium text-zinc-500 hover:text-zinc-300 flex items-center gap-1 disabled:opacity-40"
-                  >
-                    <RefreshCcw size={14} /> Tentar novamente
-                  </button>
-                )}
-                {!resultUrl ? (
-                  <button
-                    onClick={processImage}
-                    disabled={loading}
-                    className="bg-emerald-500 hover:bg-emerald-400 disabled:bg-emerald-500/50 text-black font-bold py-2 px-4 rounded-lg flex items-center gap-2 transition-all"
-                  >
-                    {loading ? <Loader2 className="animate-spin" size={18} /> : <Sparkles size={18} />}
-                    Remover Fundo
-                  </button>
-                ) : (
-                  <button
-                    onClick={downloadResult}
-                    className="bg-zinc-100 hover:bg-white text-black font-bold py-2 px-4 rounded-lg flex items-center gap-2 transition-all"
-                  >
-                    <Download size={18} /> Download PNG
-                  </button>
-                )}
-              </div>
-            </div>
+          <div className="space-y-5">
+            <button
+              onClick={handleReset}
+              className="text-xs font-medium text-zinc-500 hover:text-zinc-300 flex items-center gap-1"
+            >
+              <RefreshCcw size={14} /> Novo Upload
+            </button>
 
-            {error && (
-              <div className="bg-red-500/10 border border-red-500/20 p-3 rounded-lg flex items-center gap-3 text-red-400 text-sm">
-                <AlertCircle size={18} /> {error}
+            {loading && (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-emerald-400 text-sm font-medium">
+                  <Loader2 className="animate-spin" size={16} />
+                  {LOADING_STEPS[loadingStep]}
+                </div>
+                <div className="w-full bg-white/5 rounded-full h-1">
+                  <div
+                    className="bg-emerald-500 h-1 rounded-full transition-all duration-700"
+                    style={{ width: `${((loadingStep + 1) / LOADING_STEPS.length) * 100}%` }}
+                  />
+                </div>
+                <p className="text-[10px] text-zinc-600">
+                  O BIRefNet esta isolando o objeto com precisao cirurgica...
+                </p>
               </div>
             )}
 
-            <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4 overflow-auto md:overflow-hidden">
-              <div
-                className="relative min-h-[280px] md:min-h-0 border border-white/5 rounded-2xl bg-black overflow-hidden flex items-center justify-center"
-                style={{ cursor: panCursor }}
-                onMouseDown={handlePanStart}
-                onMouseMove={handlePanMove}
-                onMouseUp={handlePanEnd}
-                onMouseLeave={handlePanEnd}
-              >
-                <div className="absolute top-3 left-3 z-10 bg-black/50 backdrop-blur-md px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider text-zinc-400 border border-white/10">
-                  Original
-                </div>
-                <div style={{ transform: imgTransform }}>
-                  <img src={originalUrl} alt="Original" className="max-h-full max-w-full object-contain select-none" draggable={false} />
+            {error && (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-red-400 text-xs bg-red-500/10 border border-red-500/20 rounded-lg p-3">
+                  <AlertCircle size={14} /> {error}
                 </div>
               </div>
+            )}
 
-              <div
-                className="relative min-h-[280px] md:min-h-0 border border-white/5 rounded-2xl overflow-hidden flex items-center justify-center bg-checkerboard"
-                style={{ cursor: panCursor }}
-                onMouseDown={handlePanStart}
-                onMouseMove={handlePanMove}
-                onMouseUp={handlePanEnd}
-                onMouseLeave={handlePanEnd}
+            {!loading && !resultUrl && (
+              <button
+                onClick={() => void processImage()}
+                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-500/10"
               >
-                <div className="absolute top-3 left-3 z-10 flex items-center gap-2">
-                  <div className="bg-black/50 backdrop-blur-md px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider text-zinc-400 border border-white/10">
-                    Resultado
-                  </div>
-                  {resultUrl && (
-                    <div className="bg-emerald-500/20 backdrop-blur-md px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider text-emerald-400 border border-emerald-500/30">
-                      ✦ Replicate AI
-                    </div>
-                  )}
-                </div>
-                {loading && (
-                  <div className="absolute inset-0 z-20 bg-black/70 flex flex-col items-center justify-center gap-4">
-                    <Loader2 className="animate-spin text-emerald-400" size={48} />
-                    <p className="text-sm font-medium text-emerald-400 animate-pulse">
-                      {LOADING_STEPS[loadingStep]}
-                    </p>
-                  </div>
-                )}
-                <div style={{ transform: imgTransform }}>
-                  {resultUrl && (
-                    <img src={resultUrl} alt="Resultado" className="max-h-full max-w-full object-contain select-none" draggable={false} />
-                  )}
-                </div>
-                {!resultUrl && !loading && (
-                  <div className="text-zinc-500 flex flex-col items-center gap-2">
-                    <Maximize2 size={32} opacity={0.3} />
-                    <p className="text-xs">Aguardando processamento</p>
-                  </div>
-                )}
-              </div>
-            </div>
+                <Sparkles size={18} /> {error ? 'Tentar novamente' : 'Remover Fundo'}
+              </button>
+            )}
 
-            {zoom > 1 && (
-              <p className="text-center text-[10px] text-zinc-600">
-                Arraste para navegar · Clique em {Math.round(zoom * 100)}% para resetar
-              </p>
+            {resultUrl && !loading && (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-emerald-400 text-xs font-medium">
+                  <Sparkles size={14} /> Fundo removido com sucesso
+                </div>
+
+                <button
+                  onClick={() => void downloadResult()}
+                  className="w-full bg-zinc-800 hover:bg-zinc-700 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-all border border-white/10"
+                >
+                  <Download size={20} /> Download PNG
+                </button>
+
+                <button
+                  onClick={() => void processImage()}
+                  className="w-full bg-white/5 hover:bg-white/10 text-zinc-400 text-xs font-medium py-2 rounded-lg flex items-center justify-center gap-2 border border-white/10"
+                >
+                  <RefreshCcw size={13} /> Tentar novamente
+                </button>
+              </div>
             )}
           </div>
         )}
+      </div>
+
+      <div className="flex-1 bg-black p-4 grid grid-cols-1 md:grid-cols-2 gap-4 overflow-auto md:overflow-hidden">
+        <div className="relative min-h-[280px] md:min-h-0 border border-white/5 rounded-2xl bg-zinc-900 overflow-hidden flex items-center justify-center">
+          <div className="absolute top-3 left-3 z-10 bg-black/50 backdrop-blur-md px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider text-zinc-400 border border-white/10">
+            Original
+          </div>
+          {originalUrl ? (
+            <img src={originalUrl} alt="Original" className="max-h-full max-w-full object-contain select-none p-4" draggable={false} />
+          ) : (
+            <div className="flex flex-col items-center gap-2 text-zinc-700">
+              <Maximize2 size={32} />
+              <p className="text-xs">Aguardando upload</p>
+            </div>
+          )}
+        </div>
+
+        <div className="relative min-h-[280px] md:min-h-0 border border-white/5 rounded-2xl bg-checkerboard overflow-hidden flex items-center justify-center">
+          <div className="absolute top-3 left-3 z-10 flex items-center gap-2">
+            <div className="bg-black/50 backdrop-blur-md px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider text-zinc-400 border border-white/10">
+              Fundo Removido
+            </div>
+            {resultUrl && !loading && (
+              <div className="bg-emerald-500/20 backdrop-blur-md px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider text-emerald-400 border border-emerald-500/30">
+                ✦ BIRefNet AI
+              </div>
+            )}
+          </div>
+          {loading && (
+            <div className="absolute inset-0 z-20 bg-black/70 flex flex-col items-center justify-center gap-4">
+              <Loader2 className="animate-spin text-emerald-400" size={48} />
+              <p className="text-sm font-medium text-emerald-400 animate-pulse">
+                {LOADING_STEPS[loadingStep]}
+              </p>
+            </div>
+          )}
+          {resultUrl && (
+            <img src={resultUrl} alt="Fundo removido" className="max-h-full max-w-full object-contain select-none p-4" draggable={false} />
+          )}
+          {!resultUrl && !loading && (
+            <div className="flex flex-col items-center gap-2 text-zinc-700">
+              <Sparkles size={32} />
+              <p className="text-xs">Aguardando processamento</p>
+            </div>
+          )}
+        </div>
       </div>
     </motion.div>
   );
