@@ -102,10 +102,9 @@ export default function ModuleProducao() {
   const objectUrlRef        = useRef<string | null>(null);
   const processedImgUrlRef  = useRef<string | null>(null);
   const stepTimerRef        = useRef<ReturnType<typeof setInterval> | null>(null);
-  const silhouetteTimer     = useRef<ReturnType<typeof setTimeout> | null>(null);
   const svgUrlRef           = useRef<string | null>(null);
   const svgStrRef           = useRef<string | null>(null);
-  const matrizGeneratedRef  = useRef(false);
+  const silhouetteJobRef    = useRef(0);
 
   const {
     offsetX, offsetY,
@@ -122,22 +121,31 @@ export default function ModuleProducao() {
       if (processedImgUrlRef.current) URL.revokeObjectURL(processedImgUrlRef.current);
       if (svgUrlRef.current)          URL.revokeObjectURL(svgUrlRef.current);
       if (stepTimerRef.current)       clearInterval(stepTimerRef.current);
-      if (silhouetteTimer.current)    clearTimeout(silhouetteTimer.current);
     };
   }, []);
 
-  useEffect(() => { matrizGeneratedRef.current = matrizGenerated; }, [matrizGenerated]);
+  const clearSilhouette = useCallback(() => {
+    silhouetteJobRef.current += 1;
+    setMatrizGenerated(false);
+    setSilhouetteLoading(false);
+    setSilhouetteUrl(null);
+    if (svgUrlRef.current) {
+      URL.revokeObjectURL(svgUrlRef.current);
+      svgUrlRef.current = null;
+    }
+    svgStrRef.current = null;
+  }, []);
 
   // ── Responsive canvas (Etapa 2) ────────────────────────────────────────────
   const recalcCanvasSize = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
     const { width, height } = el.getBoundingClientRect();
-    const columns = matrizGeneratedRef.current ? 2 : 1;
+    const columns = etapa === 2 ? 2 : 1;
     const availW  = width / columns - (columns > 1 ? 32 : 0);
     const size    = Math.max(Math.min(Math.floor(Math.min(availW, height) * 0.88), 900), 260);
     setCanvasSize(size);
-  }, []);
+  }, [etapa]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -164,10 +172,7 @@ export default function ModuleProducao() {
     setOriginalUrl(url);
     setResultUrl(null);
     setBgError(null);
-    setMatrizGenerated(false);
-    setSilhouetteUrl(null);
-    if (svgUrlRef.current) { URL.revokeObjectURL(svgUrlRef.current); svgUrlRef.current = null; }
-    svgStrRef.current = null;
+    clearSilhouette();
 
     // Auto-disparar remoção de fundo
     await triggerBgRemoval(f);
@@ -211,13 +216,11 @@ export default function ModuleProducao() {
   const handleReset = () => {
     if (objectUrlRef.current)       { URL.revokeObjectURL(objectUrlRef.current);       objectUrlRef.current = null; }
     if (processedImgUrlRef.current) { URL.revokeObjectURL(processedImgUrlRef.current); processedImgUrlRef.current = null; }
-    if (svgUrlRef.current)          { URL.revokeObjectURL(svgUrlRef.current);           svgUrlRef.current = null; }
     if (stepTimerRef.current)       { clearInterval(stepTimerRef.current);              stepTimerRef.current = null; }
-    svgStrRef.current = null;
+    clearSilhouette();
     setFile(null); setOriginalUrl(null); setResultUrl(null);
     setBgError(null); setBgLoading(false);
     setProcessedImg(null);
-    setMatrizGenerated(false); setSilhouetteUrl(null);
     setEtapa(1);
     resetTransform();
     if (inputRef.current) inputRef.current.value = '';
@@ -228,8 +231,7 @@ export default function ModuleProducao() {
     if (!resultUrl) return;
     setEtapa(2);
     resetTransform();
-    setMatrizGenerated(false);
-    setSilhouetteUrl(null);
+    clearSilhouette();
     try {
       const res  = await fetch(resultUrl);
       const blob = await res.blob();
@@ -350,36 +352,39 @@ export default function ModuleProducao() {
   const applySilhouette = useCallback(() => {
     const canvas = getFinalCanvas();
     if (!canvas) return;
+    const jobId = silhouetteJobRef.current + 1;
+    silhouetteJobRef.current = jobId;
     setSilhouetteLoading(true);
     setTimeout(() => {
+      if (jobId !== silhouetteJobRef.current) return;
       try {
         const svgStr = buildSilhouetteSvg(canvas);
+        if (jobId !== silhouetteJobRef.current) return;
         svgStrRef.current = svgStr;
         if (svgUrlRef.current) URL.revokeObjectURL(svgUrlRef.current);
         const blob = new Blob([svgStr], { type: 'image/svg+xml' });
         const url  = URL.createObjectURL(blob);
         svgUrlRef.current = url;
         setSilhouetteUrl(url);
+        setMatrizGenerated(true);
       } finally {
-        setSilhouetteLoading(false);
+        if (jobId === silhouetteJobRef.current) {
+          setSilhouetteLoading(false);
+        }
       }
     }, 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [processedImg, offsetX, offsetY, zoom, rotation, selectedProduct, canvasSize]);
 
   const handleGerarMatriz = () => {
-    setMatrizGenerated(true);
     applySilhouette();
   };
 
-  // Regenerar silhueta reativamente após mudanças nos transforms
+  // Qualquer ajuste invalida a matriz atual até uma nova geração manual
   useEffect(() => {
-    if (!matrizGenerated || !processedImg) return;
-    if (silhouetteTimer.current) clearTimeout(silhouetteTimer.current);
-    silhouetteTimer.current = setTimeout(() => applySilhouette(), 250);
-    return () => { if (silhouetteTimer.current) clearTimeout(silhouetteTimer.current); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [offsetX, offsetY, zoom, rotation, selectedProduct, processedImg, canvasSize]);
+    if (etapa !== 2 || !processedImg) return;
+    clearSilhouette();
+  }, [etapa, processedImg, selectedProduct, offsetX, offsetY, zoom, rotation, clearSilhouette]);
 
   // ── Downloads ──────────────────────────────────────────────────────────────
   const downloadPNG = () => {
@@ -692,14 +697,12 @@ export default function ModuleProducao() {
               </div>
             </div>
 
-            <div className={`flex items-center justify-center ${matrizGenerated ? 'gap-6' : ''}`}>
+            <div className="flex items-center justify-center gap-6">
               {/* Canvas do produto */}
               <div className="flex flex-col items-center gap-2">
-                {matrizGenerated && (
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
-                    Imagem no Produto
-                  </span>
-                )}
+                <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                  Imagem no Produto
+                </span>
                 <canvas
                   ref={canvasRef}
                   style={{ width: canvasSize, height: canvasSize, cursor: 'move' }}
@@ -713,27 +716,29 @@ export default function ModuleProducao() {
               </div>
 
               {/* Preview da silhueta */}
-              {matrizGenerated && (
-                <div className="flex flex-col items-center gap-2">
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
-                    Silhueta SVG
-                  </span>
-                  <div
-                    style={{ width: canvasSize, height: canvasSize }}
-                    className="shadow-2xl rounded-lg border border-white/5 bg-white flex items-center justify-center overflow-hidden"
-                  >
-                    {silhouetteLoading ? (
-                      <Loader2 className="animate-spin text-zinc-400" size={32} />
-                    ) : silhouetteUrl ? (
-                      <img
-                        src={silhouetteUrl}
-                        alt="Silhueta SVG"
-                        style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-                      />
-                    ) : null}
-                  </div>
+              <div className="flex flex-col items-center gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                  Silhueta SVG
+                </span>
+                <div
+                  style={{ width: canvasSize, height: canvasSize }}
+                  className="shadow-2xl rounded-lg border border-white/5 bg-white flex items-center justify-center overflow-hidden"
+                >
+                  {silhouetteLoading ? (
+                    <Loader2 className="animate-spin text-zinc-400" size={32} />
+                  ) : silhouetteUrl ? (
+                    <img
+                      src={silhouetteUrl}
+                      alt="Silhueta SVG"
+                      style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                    />
+                  ) : (
+                    <span className="px-6 text-center text-xs font-medium uppercase tracking-widest text-zinc-400">
+                      Clique em Gerar Matriz
+                    </span>
+                  )}
                 </div>
-              )}
+              </div>
             </div>
 
             {!processedImg && (
